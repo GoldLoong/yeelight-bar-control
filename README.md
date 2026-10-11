@@ -1,6 +1,6 @@
 # 显示器上方的那条灯
 
-**Yeelight Bar** · macOS 菜单栏工具，让易来显示器挂灯跟着画面走。  
+**Yeelight Bar** · macOS 菜单栏工具，让米家-Yeelight易来屏幕挂灯Pro跟着画面走。  
 作者 / Author: [GoldLoong](https://github.com/GoldLoong)
 
 这是一个**非官方**项目，与易来（Yeelight）及其关联公司无关。Yeelight 是其权利人的商标。灯具协议按局域网控制文档在本地使用，本仓库不提供云账号、不上传画面。
@@ -11,11 +11,11 @@
 
 ## 中文
 
-我有一条易来显示器挂灯 Pro。官方 App 能开灯、调色温，在 Windows 上也能跟着游戏走。我的片子不在那里。
+我买了一盏米家-Yeelight易来屏幕挂灯Pro。灯很好用，官方也为游戏做了氛围灯：画面一变，背后的灯就跟着变。我用的是 Mac，平时不玩游戏，这套联动落不到我的场景里。
 
-电影在 IINA 里，视频在浏览器里，有时只是桌面上随便一个窗口亮着。我想让屏幕背后那圈氛围灯跟着这些画面变色，主灯该亮的时候仍然亮着，而且不要在 Dock 里多占一个图标。
+我想要的是另一条路。在 Mac 上播本地电影时，灯跟着片子走；看在线视频时，灯跟着网页里的画面走；没有在播放的时候，也可以让灯跟着整块屏幕的颜色走。官方没有把这件事做到 macOS 上，于是有了这个开源项目。
 
-于是留下了这个只住在菜单栏里的小工具。它在这台 Mac 和灯之间说话，不经过云。
+它只跑在这台 Mac 上，通过局域网和灯说话。菜单栏里一个图标，把本地影片、在线视频和屏幕色彩接到氛围灯上。
 
 跟色这件事比开关更挑剔。易来的 TCP 通道大约每分钟几十次，拿来频繁推颜色会被配额拖死，拖色温时灯也不跟着走。所以开关、模式、氛围特效仍走 TCP，并在客户端用令牌桶限速；画面同步和已经开着的灯上的色温、主灯亮度，走 UDP。暂停时留下最后一种颜色，也留着这条 UDP 会话，方便接着用手拖。
 
@@ -101,11 +101,11 @@ IINA 同步：
 
 ## The light above the monitor
 
-I have a Yeelight monitor light bar Pro. The official app can turn it on, set the color temperature, and on Windows it can follow games. My films are not there.
+I bought a Mijia-Yeelight screen light bar Pro: 米家-Yeelight易来屏幕挂灯Pro. The lamp is excellent, and the official app already follows games: when the picture changes, the light behind the screen changes with it. I use a Mac, and I don't play games, so that mode never reached the way I actually watch things.
 
-They play in IINA. Videos play in the browser. Sometimes it is just whichever window happens to be bright on the desktop. I wanted the ambient strip behind the screen to follow those pictures, the main light to stay a reading light when it should, and no extra icon in the Dock.
+I wanted a different path. While a local film plays on the Mac, the lamp follows the movie. While an online video plays, it follows the picture in the page. When nothing is playing, it can still follow the colors on the screen. The official app does not do this on macOS, so I made this project and released it as open source.
 
-So this menu-bar tool stayed. It talks between this Mac and the lamp. Nothing goes to a cloud.
+It runs only on this Mac and talks to the lamp over the local network. One menu-bar icon connects local films, online video, and the colors on screen to the ambient light.
 
 Color is pickier than a power switch. The lamp's TCP channel only accepts a few dozen commands a minute. Pushing a new color that often stalls on the quota, and dragging the color temperature stops tracking. Switches, modes, and ambient effects still go over TCP, with a token bucket on the client. Picture sync, and color temperature or main brightness while the lamp is already on, go over UDP. A pause keeps the last color and keeps that UDP session, so the sliders still work.
 
