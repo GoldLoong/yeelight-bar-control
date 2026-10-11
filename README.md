@@ -47,14 +47,61 @@
 
 仓库里的 `config.json` 不会提交。
 
-### 下载
+### 安装
 
-安装包在 [Releases](https://github.com/GoldLoong/yeelight-bar-control/releases) 的 **0.2.0**：
+文件在 [Releases](https://github.com/GoldLoong/yeelight-bar-control/releases) 的 **0.2.0**。主应用里已经带上 IINA 插件、Chrome 扩展和 Safari 工程，也可以下载单独的压缩包。
 
-- 主应用：解压后拖进「应用程序」。第一次若被系统拦住，在 Finder 里右键，选择「打开」
-- IINA 插件、Chrome 扩展、Safari 工程也单独附在同一发布里。主应用里已经带上这三份，应用内可以安装
+#### 主应用
 
-### 跑起来
+1. 下载 `YeelightBar-0.2.0-mac.zip`，解压。
+2. 把 **Yeelight 显示器挂灯** 拖进「应用程序」。
+3. 第一次双击时，系统会说：Apple 无法验证「Yeelight 显示器挂灯」是否包含可能危害 Mac 安全或泄漏隐私的恶意软件。这是因为这份应用没有经过 Apple 公证。它只在你的电脑上控制局域网里的灯，不会把画面上传到网上。
+4. 在提示里点 **完成**。不要点「移到废纸篓」。
+5. 打开 **系统设置 → 隐私与安全性**，拉到页面下方。
+6. 点 **仍要打开**，再点 **打开**。系统若要求输入开机密码，输入后确认。
+7. 这一次确认之后，以后从启动台或「应用程序」打开，不会再出现这句提示。
+
+也可以在 Finder 里按住 Control 点按这个应用，选择 **打开**，再在新对话框里点 **打开**。
+
+菜单栏会出现图标。左键是迷你面板，右键可以退出。关掉窗口只是隐藏。
+
+接着在易来 App 里打开这盏灯的局域网控制，并让 Mac 和灯处在同一网段。跟色前，在 **系统设置 → 隐私与安全性 → 屏幕录制** 里允许「Yeelight 显示器挂灯」。
+
+#### IINA 插件
+
+用来跟本地电影。
+
+1. 打开挂灯应用，在「设备」里点 **安装 IINA 插件**。
+2. 完全退出 IINA（Cmd+Q），再打开。
+3. 确认插件 **Yeelight Bar Sync** 已启用，然后播放一段视频。
+
+从源码安装时，也可以运行 `./scripts/install-iina-plugin.sh`，之后同样要重开 IINA。单独的压缩包是 `YeelightBar-iina-plugin-0.2.0.zip`。
+
+#### Chrome / Edge 扩展
+
+用来跟哔哩哔哩。跟色时请关掉弹幕。
+
+1. 在挂灯应用的「浏览器」里点 **安装 Chrome 扩展**，Finder 会打开扩展文件夹。也可以改用 `YeelightBar-chrome-extension-0.2.0.zip`，解压后使用里面的文件夹。
+2. 打开 `chrome://extensions`（Edge 是 `edge://extensions`），打开右上角的 **开发者模式**。
+3. 点 **加载已解压的扩展程序**，选中刚才的文件夹。
+4. 打开任意哔哩哔哩视频并播放。挂灯窗口应显示浏览器正在播放。
+5. 在同步页打开 **浏览器** 开关。
+
+若显示「未收到扩展状态」：在扩展页点重新加载，然后刷新哔哩哔哩标签页再播。
+
+#### Safari 扩展
+
+同样用来跟哔哩哔哩。Safari 不能直接加载文件夹。
+
+1. 安装完整的 Xcode。只装命令行工具不够。
+2. 解压 `YeelightBar-safari-extension-0.2.0.zip`，或使用仓库里的 `browser-extension/safari`。
+3. 用 Xcode 打开 `YeelightBarSync.xcodeproj`。顶部选 **My Mac**，点 **Run** 一次。签名时选自己的 Apple ID 即可。
+4. 打开 **Safari → 设置 → 扩展**，勾选 **Yeelight Bar Sync (Web)**。
+5. 允许它访问 **bilibili.com** 和 **127.0.0.1**。
+6. 若 Safari 不列出未签名扩展：菜单栏 **开发 → 允许未签名的扩展**。
+7. 打开哔哩哔哩播放视频，并在挂灯应用里打开浏览器同步。
+
+### 从源码运行
 
 ```bash
 chmod +x scripts/*.sh
@@ -85,7 +132,7 @@ IINA 同步：
 ./scripts/build-app.sh
 ```
 
-产物在 `app/dist/mac/`。默认打当前机器的架构。Universal 包：`YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`。第一次打开若被系统拦住，在 Finder 里右键，选择「打开」。
+产物在 `app/dist/mac/`。默认打当前机器的架构。Universal 包：`YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`。第一次打开时的系统拦截，见上面的「主应用」。
 
 ### 仓库里有什么
 
@@ -144,14 +191,61 @@ Set the lamp address in config. The template is `config.example.json`. The file 
 
 The `config.json` in this repository is not committed.
 
-### Download
+### Install
 
-Installers are on the **0.2.0** [release](https://github.com/GoldLoong/yeelight-bar-control/releases):
+The files are on the **0.2.0** [release](https://github.com/GoldLoong/yeelight-bar-control/releases). The main app already includes the IINA plugin, the Chrome extension, and the Safari project. Each is also attached on its own.
 
-- Main app: unzip it and move it to Applications. If macOS blocks the first launch, right-click the app in Finder and choose Open
-- The IINA plugin, the Chrome extension, and the Safari project are attached separately. The main app already includes all three, and can install them from its window
+#### Main app
 
-### Run it
+1. Download `YeelightBar-0.2.0-mac.zip` and unzip it.
+2. Move **Yeelight 显示器挂灯** into Applications.
+3. The first double-click says Apple cannot verify whether Yeelight 显示器挂灯 contains malware that may harm your Mac or compromise your privacy. The app is not notarized by Apple. It controls the lamp on your local network and does not upload the picture.
+4. Click **Done** in the alert. Leave the app where it is.
+5. Open **System Settings → Privacy & Security** and scroll to the bottom.
+6. Click **Open Anyway**, then **Open**. Enter your login password if macOS asks.
+7. After this confirmation, launching it from the Applications folder no longer shows the alert.
+
+You can also Control-click the app in Finder, choose **Open**, then click **Open** again.
+
+A menu-bar icon appears. Left click opens the mini panel. Right click can quit. Closing the window only hides it.
+
+Then turn on LAN control for this lamp in the Yeelight app, and keep the Mac on the same network. Before color sampling, allow **Yeelight 显示器挂灯** under **System Settings → Privacy & Security → Screen Recording**.
+
+#### IINA plugin
+
+This follows local films.
+
+1. Open the lamp app and click **安装 IINA 插件** in the Device section.
+2. Quit IINA completely (Cmd+Q), then open it again.
+3. Confirm the **Yeelight Bar Sync** plugin is enabled, and play a video.
+
+From a source checkout you can also run `./scripts/install-iina-plugin.sh`, then reopen IINA the same way. The separate archive is `YeelightBar-iina-plugin-0.2.0.zip`.
+
+#### Chrome / Edge extension
+
+This follows Bilibili. Turn danmaku off while sampling color.
+
+1. In the lamp app, open the Browser section and click **安装 Chrome 扩展**. Finder opens the extension folder. Or unzip `YeelightBar-chrome-extension-0.2.0.zip` and use that folder.
+2. Open `chrome://extensions` (Edge: `edge://extensions`) and turn on **Developer mode**.
+3. Click **Load unpacked** and select that folder.
+4. Open any Bilibili video and press play. The lamp window should show the browser playing.
+5. Turn on the **Browser** switch on the sync page.
+
+If it says no extension status has arrived, reload the extension, refresh the Bilibili tab, and play again.
+
+#### Safari extension
+
+This also follows Bilibili. Safari cannot load a plain folder.
+
+1. Install the full Xcode app. The command-line tools alone are not enough.
+2. Unzip `YeelightBar-safari-extension-0.2.0.zip`, or use `browser-extension/safari` from the repository.
+3. Open `YeelightBarSync.xcodeproj` in Xcode. Choose **My Mac** at the top and click **Run** once. When signing, your own Apple ID is enough.
+4. Open **Safari → Settings → Extensions** and enable **Yeelight Bar Sync (Web)**.
+5. Allow it on **bilibili.com** and **127.0.0.1**.
+6. If Safari hides unsigned extensions, use **Develop → Allow Unsigned Extensions**.
+7. Play a Bilibili video and turn on browser sync in the lamp app.
+
+### Run from source
 
 ```bash
 chmod +x scripts/*.sh
@@ -182,7 +276,7 @@ Build a double-clickable menu-bar app:
 ./scripts/build-app.sh
 ```
 
-The result is under `app/dist/mac/`. The default build matches this machine. For a universal build: `YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`. If macOS blocks the first launch, right-click the app in Finder and choose Open.
+The result is under `app/dist/mac/`. The default build matches this machine. For a universal build: `YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`. The first-launch system warning is covered under Main app above.
 
 ### What is in the repo
 
