@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Yeelight Bar Sync (Web)",
+  "version": "0.1.3",
+  "description": "向本机易来挂灯服务上报 B 站播放态，用于浏览器画面同步。",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "http://127.0.0.1:8787/*",
+    "*://*.bilibili.com/*",
+    "*://*.bilibili.tv/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.bilibili.com/*",
+        "*://*.bilibili.tv/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "Yeelight Bar Sync",
+    "default_icon": {
+      "16": "images/icon-16.png",
+      "48": "images/icon-48.png",
+      "128": "images/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "images/icon-16.png",
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  }
+}

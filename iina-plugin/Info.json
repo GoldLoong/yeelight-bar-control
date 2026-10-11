@@ -1,0 +1,15 @@
+{
+  "name": "Yeelight Bar Sync",
+  "identifier": "com.yeelightbar.sync",
+  "version": "0.2.0",
+  "description": "向挂灯服务上报 IINA 播放进度/seek，驱动低延迟氛围同步",
+  "author": {
+    "name": "Yeelight Bar Control",
+    "email": "dev@localhost",
+    "url": "https://localhost"
+  },
+  "entry": "index.js",
+  "globalEntry": "global.js",
+  "permissions": ["network-request", "show-osd"],
+  "allowedDomains": ["*"]
+}

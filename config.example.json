@@ -1,0 +1,93 @@
+{
+  "host": "192.168.0.116",
+  "tcp_port": 55443,
+  "udp_port": 55444,
+  "api_host": "127.0.0.1",
+  "api_port": 8787,
+  "launch_at_login": false,
+  "onboarding": {
+    "complete": false
+  },
+  "sync": {
+    "enabled": true,
+    "priority": ["iina", "browser", "screen"],
+    "iina": {
+      "enabled": true,
+      "channels": {
+        "ambient_color": true,
+        "main_brightness": false,
+        "ambient_brightness": false
+      },
+      "display_id": null,
+      "region": "window",
+      "color_smooth": 0.2,
+      "main_bright_smooth": 0.2,
+      "ambient_bright_smooth": 0.2,
+      "base_main_bright": 50,
+      "base_ambient_bright": 40,
+      "main_bright_range": 5,
+      "ambient_bright_range": 30,
+      "on_pause": "keep_last",
+      "on_exit": "ambient_mode",
+      "exit_mode": "ambient_mode",
+      "iina_ipc_socket": null
+    },
+    "browser": {
+      "enabled": false,
+      "channels": {
+        "ambient_color": true,
+        "main_brightness": false,
+        "ambient_brightness": false
+      },
+      "display_id": null,
+      "region": "window",
+      "color_smooth": 0.08,
+      "main_bright_smooth": 0.2,
+      "ambient_bright_smooth": 0.2,
+      "base_main_bright": 50,
+      "base_ambient_bright": 40,
+      "main_bright_range": 5,
+      "ambient_bright_range": 30,
+      "on_pause": "keep_last",
+      "on_exit": "ambient_mode",
+      "exit_mode": "ambient_mode",
+      "owners": [
+        "Google Chrome",
+        "Chromium",
+        "Microsoft Edge",
+        "Brave Browser",
+        "Safari",
+        "Orion"
+      ],
+      "match_hosts": [
+        "www.bilibili.com",
+        "m.bilibili.com",
+        "www.bilibili.tv"
+      ],
+      "require_extension": true
+    },
+    "screen": {
+      "enabled": false,
+      "channels": {
+        "ambient_color": true,
+        "main_brightness": false,
+        "ambient_brightness": false
+      },
+      "display_id": null,
+      "region": "window",
+      "capture_target": "front_window",
+      "user_rect": null,
+      "eligibility": ["target_valid"],
+      "color_smooth": 0.2,
+      "main_bright_smooth": 0.2,
+      "ambient_bright_smooth": 0.2,
+      "base_main_bright": 50,
+      "base_ambient_bright": 40,
+      "main_bright_range": 5,
+      "ambient_bright_range": 30,
+      "on_pause": "keep_last",
+      "on_exit": "ambient_mode",
+      "exit_mode": "ambient_mode"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "name": "yeelight-bar-control",
+  "version": "0.2.0",
+  "description": "Yeelight 显示器挂灯（菜单栏 + 独立窗口）",
+  "main": "main.js",
+  "author": "GoldLoong",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "pack": "electron-builder --mac dir",
+    "pack:universal": "electron-builder --mac dir --universal"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.yeelightbar.control",
+    "productName": "Yeelight 显示器挂灯",
+    "copyright": "Copyright © 2026 GoldLoong",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "build/trayTemplate.png",
+      "build/trayTemplate@2x.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../packaging/payload/server",
+        "to": "server"
+      },
+      {
+        "from": "../packaging/payload/iina-plugin",
+        "to": "iina-plugin"
+      },
+      {
+        "from": "../packaging/payload/browser-extension",
+        "to": "browser-extension"
+      },
+      {
+        "from": "../packaging/payload/config.example.json",
+        "to": "config.example.json"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.png",
+      "identity": null,
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSHighResolutionCapable": true,
+        "NSScreenCaptureUsageDescription": "用于画面同步时对窗口或屏幕取色。"
+      },
+      "target": [
+        {
+          "target": "dir"
+        }
+      ]
+    }
+  }
+}

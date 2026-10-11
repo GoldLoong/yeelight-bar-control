@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>框选区域</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        cursor: crosshair;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+        user-select: none;
+        -webkit-app-region: no-drag;
+      }
+      #mask {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.35);
+      }
+      #rect {
+        position: fixed;
+        border: 2px solid #3b6cff;
+        background: rgba(59, 108, 255, 0.12);
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+        display: none;
+        pointer-events: none;
+      }
+      #hud {
+        position: fixed;
+        left: 50%;
+        bottom: 28px;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-radius: 14px;
+        background: rgba(20, 20, 22, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #fff;
+        font-size: 13px;
+        pointer-events: auto;
+        cursor: default;
+      }
+      #size {
+        color: rgba(255, 255, 255, 0.65);
+        min-width: 88px;
+      }
+      button {
+        appearance: none;
+        border: none;
+        border-radius: 10px;
+        padding: 8px 14px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #btnCancel {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+      }
+      #btnOk {
+        background: #3b6cff;
+        color: #fff;
+      }
+      #btnOk:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="mask"></div>
+    <div id="rect"></div>
+    <div id="hud">
+      <span>拖拽框选区域 · Esc 取消 · Enter 确认</span>
+      <span id="size">—</span>
+      <button type="button" id="btnCancel">取消</button>
+      <button type="button" id="btnOk" disabled>确认</button>
+    </div>
+    <script>
+      const rectEl = document.getElementById("rect");
+      const sizeEl = document.getElementById("size");
+      const btnOk = document.getElementById("btnOk");
+      const btnCancel = document.getElementById("btnCancel");
+
+      let dragging = false;
+      let startX = 0;
+      let startY = 0;
+      let cur = null; // { left, top, width, height } in screen coords
+
+      function screenPoint(e) {
+        // Electron: screenX/Y 为全局屏幕坐标
+        return { x: Math.round(e.screenX), y: Math.round(e.screenY) };
+      }
+
+      function clientPoint(e) {
+        return { x: Math.round(e.clientX), y: Math.round(e.clientY) };
+      }
+
+      function applyRect(client, screen) {
+        const w = Math.max(0, client.width);
+        const h = Math.max(0, client.height);
+        if (w < 2 || h < 2) {
+          rectEl.style.display = "none";
+          cur = null;
+          btnOk.disabled = true;
+          sizeEl.textContent = "—";
+          return;
+        }
+        rectEl.style.display = "block";
+        rectEl.style.left = client.left + "px";
+        rectEl.style.top = client.top + "px";
+        rectEl.style.width = w + "px";
+        rectEl.style.height = h + "px";
+        cur = {
+          left: screen.left,
+          top: screen.top,
+          width: Math.max(8, screen.width),
+          height: Math.max(8, screen.height),
+          display_id: null,
+        };
+        sizeEl.textContent = `${cur.width}×${cur.height}`;
+        btnOk.disabled = false;
+      }
+
+      window.addEventListener("mousedown", (e) => {
+        if (e.target.closest("#hud")) return;
+        dragging = true;
+        const c = clientPoint(e);
+        const s = screenPoint(e);
+        startX = c.x;
+        startY = c.y;
+        window.__startScreen = s;
+        applyRect(
+          { left: c.x, top: c.y, width: 0, height: 0 },
+          { left: s.x, top: s.y, width: 0, height: 0 }
+        );
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        const c = clientPoint(e);
+        const s = screenPoint(e);
+        const cLeft = Math.min(startX, c.x);
+        const cTop = Math.min(startY, c.y);
+        const cW = Math.abs(c.x - startX);
+        const cH = Math.abs(c.y - startY);
+        const sLeft = Math.min(window.__startScreen.x, s.x);
+        const sTop = Math.min(window.__startScreen.y, s.y);
+        const sW = Math.abs(s.x - window.__startScreen.x);
+        const sH = Math.abs(s.y - window.__startScreen.y);
+        applyRect(
+          { left: cLeft, top: cTop, width: cW, height: cH },
+          { left: sLeft, top: sTop, width: sW, height: sH }
+        );
+      });
+
+      window.addEventListener("mouseup", () => {
+        dragging = false;
+      });
+
+      async function cancel() {
+        if (window.yeelight?.cancelRegionPicker) {
+          await window.yeelight.cancelRegionPicker();
+        }
+      }
+
+      async function confirm() {
+        if (!cur || cur.width < 8 || cur.height < 8) return;
+        if (window.yeelight?.confirmRegionPicker) {
+          await window.yeelight.confirmRegionPicker(cur);
+        }
+      }
+
+      btnCancel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        cancel();
+      });
+      btnOk.addEventListener("click", (e) => {
+        e.stopPropagation();
+        confirm();
+      });
+
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") cancel();
+        if (e.key === "Enter") confirm();
+      });
+    </script>
+  </body>
+</html>

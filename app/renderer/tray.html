@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Yeelight 显示器挂灯</title>
+    <link rel="stylesheet" href="tray.css" />
+  </head>
+  <body class="tray-body">
+    <div class="tray-app" id="trayRoot">
+      <header class="tray-head">
+        <div class="tray-title-row">
+          <strong>Yeelight 挂灯</strong>
+          <span class="tray-sub" id="trayStatus">就绪</span>
+        </div>
+      </header>
+
+      <section class="tray-group">
+        <div class="tray-seg" role="group" aria-label="模式">
+          <button type="button" class="tray-mode" data-mode="office">办公</button>
+          <button type="button" class="tray-mode" data-mode="game">竞技</button>
+          <button type="button" class="tray-mode" data-mode="movie">电影</button>
+          <button type="button" class="tray-mode" data-mode="chill">休闲</button>
+        </div>
+      </section>
+
+      <section class="tray-group">
+        <div class="tray-row">
+          <span class="tray-row-label">主灯</span>
+          <button class="tray-toggle" id="trayMainPower" aria-pressed="false" aria-label="主灯开关"></button>
+        </div>
+        <div class="tray-slider-row">
+          <span class="tray-slider-name">亮度</span>
+          <input id="trayMainBright" type="range" min="1" max="100" value="50" />
+          <em id="trayMainBrightVal">50%</em>
+        </div>
+        <div class="tray-slider-row">
+          <span class="tray-slider-name">色温</span>
+          <input id="trayCt" type="range" min="1700" max="6500" step="50" value="4000" />
+          <em id="trayCtVal">4000K</em>
+        </div>
+      </section>
+
+      <section class="tray-group">
+        <div class="tray-row">
+          <span class="tray-row-label">氛围灯</span>
+          <button class="tray-toggle" id="trayBgPower" aria-pressed="false" aria-label="氛围灯开关"></button>
+        </div>
+        <div class="tray-slider-row">
+          <span class="tray-slider-name">亮度</span>
+          <input id="trayBgBright" type="range" min="1" max="100" value="40" />
+          <em id="trayBgBrightVal">40%</em>
+        </div>
+        <div class="tray-swatches" id="traySwatches">
+          <button type="button" data-hex="#2A3A55" style="--c:#2A3A55" aria-label="深蓝灰"></button>
+          <button type="button" data-hex="#C0FF73" style="--c:#C0FF73" aria-label="黄绿"></button>
+          <button type="button" data-hex="#2A5BFF" style="--c:#2A5BFF" aria-label="蓝"></button>
+          <button type="button" data-hex="#FF2D95" style="--c:#FF2D95" aria-label="粉"></button>
+          <button type="button" data-hex="#FF9500" style="--c:#FF9500" aria-label="橙"></button>
+          <button type="button" data-hex="#AF52DE" style="--c:#AF52DE" aria-label="紫"></button>
+        </div>
+      </section>
+
+      <section class="tray-group">
+        <div class="tray-row">
+          <div class="tray-row-stack">
+            <span class="tray-row-label">同步</span>
+            <span class="tray-hint" id="traySyncHint">待命</span>
+          </div>
+          <button class="tray-toggle" id="traySync" aria-pressed="false" aria-label="同步开关"></button>
+        </div>
+      </section>
+
+      <button type="button" class="tray-link" id="trayOpenFull">打开完整控制</button>
+    </div>
+    <script src="tray.js"></script>
+  </body>
+</html>

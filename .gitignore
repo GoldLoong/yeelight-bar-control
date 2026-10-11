@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+config.json
+app/node_modules/
+app/dist/
+packaging/payload/
+packaging/cache/
+.DS_Store
+*.log
+
+# 不公开：本机备份、官方 App 参考截图、内部交接
+backups/
+参考信息和参考UI/
+交接文档.md

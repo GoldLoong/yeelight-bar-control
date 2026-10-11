@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Yeelight 显示器挂灯</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="topbar-side"></div>
+        <div class="topbar-title">
+          <h1>Yeelight 显示器挂灯</h1>
+          <p class="topbar-sub" id="connText">正在连接…</p>
+        </div>
+        <button class="icon-btn" id="btnMenu" title="设置" aria-label="设置">⋯</button>
+      </header>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="mode" role="tab" aria-selected="true">
+          <span class="tab-dots" aria-hidden="true"></span>
+          模式
+        </button>
+        <button class="tab" data-tab="main" role="tab" aria-selected="false">屏幕灯</button>
+        <button class="tab" data-tab="ambient" role="tab" aria-selected="false">氛围灯</button>
+        <button class="tab" data-tab="sync" role="tab" aria-selected="false">同步</button>
+      </nav>
+
+      <div class="panels">
+        <!-- 模式 -->
+        <section class="panel active" id="panel-mode" role="tabpanel">
+          <div class="mode-grid">
+            <div class="mode-card office" data-mode="office" role="button" tabindex="0">
+              <button type="button" class="mode-gear-btn" data-mode="office" aria-label="编辑办公模式"></button>
+              <div class="mode-art"></div>
+              <span>办公模式</span>
+            </div>
+            <div class="mode-card game" data-mode="game" role="button" tabindex="0">
+              <button type="button" class="mode-gear-btn" data-mode="game" aria-label="编辑竞技模式"></button>
+              <div class="mode-art"></div>
+              <span>竞技模式</span>
+            </div>
+            <div class="mode-card movie" data-mode="movie" role="button" tabindex="0">
+              <button type="button" class="mode-gear-btn" data-mode="movie" aria-label="编辑电影模式"></button>
+              <div class="mode-art"></div>
+              <span>电影模式</span>
+            </div>
+            <div class="mode-card chill" data-mode="chill" role="button" tabindex="0">
+              <button type="button" class="mode-gear-btn" data-mode="chill" aria-label="编辑休闲模式"></button>
+              <div class="mode-art"></div>
+              <span>休闲模式</span>
+            </div>
+          </div>
+          <p class="mode-hint">点选套用模式；点齿轮进入模式详情</p>
+        </section>
+
+        <!-- 屏幕灯 -->
+        <section class="panel" id="panel-main" role="tabpanel" hidden>
+          <div class="wheel-wrap" id="ctWrap">
+            <div class="ct-face" id="ctFace" aria-hidden="true">
+              <div class="ct-cursor" id="ctCursor"></div>
+            </div>
+            <div class="ct-bezel" aria-hidden="true"></div>
+            <div class="wheel-center ct-center" id="ctCenter">
+              <strong id="mainCtVal">4000K</strong>
+              <span>色温</span>
+            </div>
+            <canvas id="ctWheel" class="wheel-hit" width="280" height="280" aria-label="色温调节"></canvas>
+          </div>
+          <div class="slider-block">
+            <div class="slider-label">亮度(<em id="mainBrightVal">50</em>%)</div>
+            <div class="bright-row">
+              <span class="sun dim" aria-hidden="true">☀</span>
+              <input id="mainBright" type="range" min="1" max="100" value="50" />
+              <span class="sun" aria-hidden="true">☀</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 氛围灯 -->
+        <section class="panel" id="panel-ambient" role="tabpanel" hidden>
+          <div class="fx-modes" role="tablist" aria-label="氛围灯效果">
+            <button type="button" class="fx-mode active" data-fx="static">
+              <span class="fx-ico static"></span>
+              <em>静态</em>
+            </button>
+            <button type="button" class="fx-mode" data-fx="breath">
+              <span class="fx-ico breath"></span>
+              <em>呼吸</em>
+            </button>
+            <button type="button" class="fx-mode" data-fx="cycle">
+              <span class="fx-ico cycle"></span>
+              <em>循环</em>
+            </button>
+            <button type="button" class="fx-mode" data-fx="flow">
+              <span class="fx-ico flow"></span>
+              <em>燃彩</em>
+            </button>
+          </div>
+
+          <div class="card palette-card">
+            <div id="fxPanelStatic">
+              <div class="section-label tight">调色板</div>
+              <div class="palette-row">
+                <span class="palette-caption">预设</span>
+                <div class="swatch-row" id="presetColors">
+                  <button type="button" class="color-dot g1" data-hex="#9B6BFF" aria-label="紫粉"></button>
+                  <button type="button" class="color-dot g2" data-hex="#3AD1C8" aria-label="青绿"></button>
+                  <button type="button" class="color-dot g3" data-hex="#FF8A4C" aria-label="橙桃"></button>
+                  <button type="button" class="color-dot g4" data-hex="#B7E05C" aria-label="黄绿"></button>
+                </div>
+              </div>
+              <div class="palette-row">
+                <div class="palette-caption-row">
+                  <span class="palette-caption">自定义</span>
+                  <button type="button" class="link-edit" id="btnShowWheel">色环</button>
+                </div>
+                <div class="swatch-row" id="customColors">
+                  <button type="button" class="color-dot" data-hex="#2A5BFF" style="background:#2A5BFF"></button>
+                  <button type="button" class="color-dot" data-hex="#FF3B30" style="background:#FF3B30"></button>
+                  <button type="button" class="color-dot" data-hex="#32D4FF" style="background:#32D4FF"></button>
+                  <button type="button" class="color-dot" data-hex="#FF2D95" style="background:#FF2D95"></button>
+                </div>
+              </div>
+              <div class="wheel-wrap compact" id="rgbWrap" hidden>
+                <div class="wheel-ring rgb-ring" aria-hidden="true"></div>
+                <div class="wheel-knob" id="rgbKnob"></div>
+                <div class="wheel-center swatch-center" id="bgSwatch">
+                  <strong id="bgColorHex">#2A3A55</strong>
+                  <span>颜色</span>
+                </div>
+                <canvas id="rgbWheel" class="wheel-hit" width="280" height="280" aria-label="颜色调节"></canvas>
+              </div>
+            </div>
+
+            <div id="fxPanelBreath" hidden>
+              <div class="section-label tight">调色板</div>
+              <div class="palette-row">
+                <span class="palette-caption">预设</span>
+                <div class="swatch-row" id="breathPresets">
+                  <button type="button" class="color-dot g1" data-hex="#9B6BFF"></button>
+                  <button type="button" class="color-dot g2" data-hex="#3AD1C8"></button>
+                  <button type="button" class="color-dot g3" data-hex="#FF8A4C"></button>
+                  <button type="button" class="color-dot g4" data-hex="#B7E05C"></button>
+                </div>
+              </div>
+              <div class="palette-row">
+                <div class="palette-caption-row">
+                  <span class="palette-caption">自定义</span>
+                </div>
+                <div class="swatch-row" id="breathCustom">
+                  <button type="button" class="color-dot" data-hex="#2A5BFF" style="background:#2A5BFF"></button>
+                  <button type="button" class="color-dot" data-hex="#FF3B30" style="background:#FF3B30"></button>
+                  <button type="button" class="color-dot" data-hex="#32D4FF" style="background:#32D4FF"></button>
+                  <button type="button" class="color-dot" data-hex="#FF2D95" style="background:#FF2D95"></button>
+                </div>
+              </div>
+            </div>
+
+            <div id="fxPanelCycle" hidden>
+              <div class="cycle-head">
+                <div>
+                  <strong>色彩顺序</strong>
+                  <p class="field-hint">灯光将按以下色彩依次循环</p>
+                </div>
+              </div>
+              <div class="cycle-seq" id="cycleSeq">
+                <span class="color-dot" data-i="0" style="background:#2A5BFF"></span>
+                <span class="seq-arrow">›</span>
+                <span class="color-dot" data-i="1" style="background:#AF52DE"></span>
+                <span class="seq-arrow">›</span>
+                <span class="color-dot" data-i="2" style="background:#34C759"></span>
+                <span class="seq-arrow">›</span>
+                <span class="color-dot" data-i="3" style="background:#FF9500"></span>
+              </div>
+              <div class="swatch-row cycle-edit-row" id="cycleEditColors">
+                <button type="button" class="color-dot" data-hex="#2A5BFF" style="background:#2A5BFF"></button>
+                <button type="button" class="color-dot" data-hex="#AF52DE" style="background:#AF52DE"></button>
+                <button type="button" class="color-dot" data-hex="#34C759" style="background:#34C759"></button>
+                <button type="button" class="color-dot" data-hex="#FF9500" style="background:#FF9500"></button>
+                <button type="button" class="color-dot" data-hex="#FF2D55" style="background:#FF2D55"></button>
+                <button type="button" class="color-dot" data-hex="#5AC8FA" style="background:#5AC8FA"></button>
+              </div>
+              <p class="field-hint">点选色点可轮换替换顺序中的颜色</p>
+            </div>
+
+            <div id="fxPanelFlow" hidden>
+              <div class="section-label tight">运动方向</div>
+              <div class="dir-row" id="flowDir">
+                <button type="button" class="dir-btn" data-dir="lr" title="左→右">→</button>
+                <button type="button" class="dir-btn" data-dir="rl" title="右→左">←</button>
+                <button type="button" class="dir-btn" data-dir="in" title="向内">><</button>
+                <button type="button" class="dir-btn active" data-dir="out" title="向外"><></button>
+              </div>
+            </div>
+
+            <div class="slider-block">
+              <div class="slider-label">亮度(<em id="bgBrightVal">40</em>%)</div>
+              <div class="bright-row">
+                <span class="sun dim" aria-hidden="true">☀</span>
+                <input id="bgBright" type="range" min="1" max="100" value="40" />
+                <span class="sun" aria-hidden="true">☀</span>
+              </div>
+            </div>
+            <div class="slider-block" id="speedBlock" hidden>
+              <div class="slider-label">速率(<em id="bgSpeedVal">3800</em>ms)</div>
+              <div class="bright-row">
+                <span class="rate dim" aria-hidden="true">◦</span>
+                <input id="bgSpeed" type="range" min="800" max="8000" step="100" value="3800" />
+                <span class="rate" aria-hidden="true">◎</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 同步 -->
+        <section class="panel" id="panel-sync" role="tabpanel" hidden>
+          <div class="card sync-panel">
+            <div class="card-head">
+              <div>
+                <h2>画面同步</h2>
+                <p class="card-sub">三源独立；点 ▾ 展开参数。拖动优先级决定跟哪一路</p>
+              </div>
+              <button class="toggle" id="syncEnable" aria-pressed="true" aria-label="同步开关"></button>
+            </div>
+
+            <div class="sync-live">
+              <div class="swatch" id="swatch"></div>
+              <div class="sync-live-text">
+                <strong id="syncLine">已开启 · 等待播放</strong>
+                <span id="activeSourceLine">当前：—</span>
+              </div>
+            </div>
+
+            <ul class="priority-list" id="syncPriorityList" aria-label="同步优先级">
+              <li class="priority-item" data-source="iina" draggable="true">
+                <span class="priority-handle" aria-hidden="true">⋮⋮</span>
+                <span class="priority-name">IINA</span>
+                <span class="priority-status" id="prio-iina-status">—</span>
+              </li>
+              <li class="priority-item" data-source="browser" draggable="true">
+                <span class="priority-handle" aria-hidden="true">⋮⋮</span>
+                <span class="priority-name">浏览器</span>
+                <span class="priority-status" id="prio-browser-status">—</span>
+              </li>
+              <li class="priority-item" data-source="screen" draggable="true">
+                <span class="priority-handle" aria-hidden="true">⋮⋮</span>
+                <span class="priority-name">屏幕</span>
+                <span class="priority-status" id="prio-screen-status">—</span>
+              </li>
+            </ul>
+          </div>
+
+          <!-- IINA -->
+          <div class="card source-panel source-accordion" id="iinaCol" data-source="iina">
+            <div class="source-col-head">
+              <div>
+                <strong>IINA</strong>
+                <p class="source-hint" id="iinaHint">播放时跟色，暂停保持</p>
+              </div>
+              <div class="source-head-actions">
+                <button type="button" class="source-expand-btn" data-expand-for="iina" aria-expanded="false" aria-label="展开设置" title="展开设置">
+                  <span class="expand-ico" aria-hidden="true"></span>
+                </button>
+                <button class="toggle" id="iinaEnable" aria-pressed="true" aria-label="IINA 同步"></button>
+              </div>
+            </div>
+            <p class="source-status" id="iinaLine">等待 IINA</p>
+            <div class="source-body">
+
+            <div class="sync-block">
+              <div class="sync-block-title">跟随内容</div>
+              <div class="channel-list">
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>氛围灯颜色</strong><span>跟色到氛围灯</span></div>
+                  <input type="checkbox" id="iina-chColor" checked data-source="iina" data-ch="ambient_color" />
+                </label>
+                <div class="channel-opts" id="iina-groupColorOpts">
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>跟色平滑 <em id="iina-smoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="iina" data-reset="color_smooth">重置</button>
+                    </div>
+                    <input id="iina-colorSmooth" type="range" min="0" max="100" value="20" data-source="iina" data-key="color_smooth" />
+                  </div>
+                </div>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>主灯亮度</strong><span>基础亮度 ± 波动</span></div>
+                  <input type="checkbox" id="iina-chMainBright" data-source="iina" data-ch="main_brightness" />
+                </label>
+                <div class="channel-opts" id="iina-groupMainBrightOpts" hidden>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>波动 ±<em id="iina-mainBrightRangeVal">5</em></span>
+                      <button type="button" class="btn-reset" data-source="iina" data-reset="main_bright_range">重置</button>
+                    </div>
+                    <input id="iina-mainBrightRange" type="range" min="0" max="50" value="5" data-source="iina" data-key="main_bright_range" />
+                  </div>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>平滑 <em id="iina-mainBrightSmoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="iina" data-reset="main_bright_smooth">重置</button>
+                    </div>
+                    <input id="iina-mainBrightSmooth" type="range" min="0" max="100" value="20" data-source="iina" data-key="main_bright_smooth" />
+                  </div>
+                </div>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>氛围灯亮度</strong><span>基础亮度 ± 波动</span></div>
+                  <input type="checkbox" id="iina-chBgBright" data-source="iina" data-ch="ambient_brightness" />
+                </label>
+                <div class="channel-opts" id="iina-groupBgBrightOpts" hidden>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>波动 ±<em id="iina-bgBrightRangeVal">30</em></span>
+                      <button type="button" class="btn-reset" data-source="iina" data-reset="ambient_bright_range">重置</button>
+                    </div>
+                    <input id="iina-bgBrightRange" type="range" min="0" max="50" value="30" data-source="iina" data-key="ambient_bright_range" />
+                  </div>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>平滑 <em id="iina-bgBrightSmoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="iina" data-reset="ambient_bright_smooth">重置</button>
+                    </div>
+                    <input id="iina-bgBrightSmooth" type="range" min="0" max="100" value="20" data-source="iina" data-key="ambient_bright_smooth" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sync-block">
+              <div class="sync-block-title">取色与退出</div>
+              <label class="field compact">
+                <span>取色屏幕</span>
+                <select id="iina-displaySelect" data-source="iina"></select>
+              </label>
+              <div class="field compact">
+                <span>取色区域</span>
+                <div class="seg" id="iina-regionSeg" data-source="iina" role="group">
+                  <button type="button" class="seg-btn active" data-region="window">窗口中部</button>
+                  <button type="button" class="seg-btn" data-region="top">窗口顶部</button>
+                  <button type="button" class="seg-btn" data-region="full">窗口大范围</button>
+                </div>
+                <span class="field-hint" id="iina-captureHint">优先采 IINA 播放窗</span>
+              </div>
+              <label class="field compact">
+                <span>退出播放后</span>
+                <select id="iina-exitSelect" data-source="iina">
+                  <option value="ambient_mode">氛围灯模式（默认色）</option>
+                  <option value="restore">恢复同步前状态</option>
+                  <option value="off_ambient">关闭氛围灯</option>
+                </select>
+              </label>
+            </div>
+            </div>
+          </div>
+
+          <!-- 浏览器 -->
+          <div class="card source-panel source-accordion" id="browserCol" data-source="browser">
+            <div class="source-col-head">
+              <div>
+                <strong>浏览器</strong>
+                <p class="source-hint" id="browserHint">B 站跟色请手动关弹幕</p>
+              </div>
+              <div class="source-head-actions">
+                <button type="button" class="source-expand-btn" data-expand-for="browser" aria-expanded="false" aria-label="展开设置" title="展开设置">
+                  <span class="expand-ico" aria-hidden="true"></span>
+                </button>
+                <button class="toggle" id="browserEnable" aria-pressed="false" aria-label="浏览器同步"></button>
+              </div>
+            </div>
+            <p class="source-status" id="browserLine">未开启</p>
+            <div class="source-body">
+            <div class="btn-row ext-install-row">
+              <button type="button" class="btn ghost" id="btnInstallChromeExt">Chrome 扩展</button>
+              <button type="button" class="btn ghost" id="btnInstallSafariExt">Safari 扩展</button>
+            </div>
+
+            <div class="sync-block">
+              <div class="sync-block-title">跟随内容</div>
+              <div class="channel-list">
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>氛围灯颜色</strong><span>跟色到氛围灯</span></div>
+                  <input type="checkbox" id="browser-chColor" checked data-source="browser" data-ch="ambient_color" />
+                </label>
+                <div class="channel-opts" id="browser-groupColorOpts">
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>跟色平滑 <em id="browser-smoothVal">8</em></span>
+                      <button type="button" class="btn-reset" data-source="browser" data-reset="color_smooth">重置</button>
+                    </div>
+                    <input id="browser-colorSmooth" type="range" min="0" max="100" value="8" data-source="browser" data-key="color_smooth" />
+                  </div>
+                </div>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>主灯亮度</strong><span>基础亮度 ± 波动</span></div>
+                  <input type="checkbox" id="browser-chMainBright" data-source="browser" data-ch="main_brightness" />
+                </label>
+                <div class="channel-opts" id="browser-groupMainBrightOpts" hidden>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>波动 ±<em id="browser-mainBrightRangeVal">5</em></span>
+                      <button type="button" class="btn-reset" data-source="browser" data-reset="main_bright_range">重置</button>
+                    </div>
+                    <input id="browser-mainBrightRange" type="range" min="0" max="50" value="5" data-source="browser" data-key="main_bright_range" />
+                  </div>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>平滑 <em id="browser-mainBrightSmoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="browser" data-reset="main_bright_smooth">重置</button>
+                    </div>
+                    <input id="browser-mainBrightSmooth" type="range" min="0" max="100" value="20" data-source="browser" data-key="main_bright_smooth" />
+                  </div>
+                </div>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>氛围灯亮度</strong><span>基础亮度 ± 波动</span></div>
+                  <input type="checkbox" id="browser-chBgBright" data-source="browser" data-ch="ambient_brightness" />
+                </label>
+                <div class="channel-opts" id="browser-groupBgBrightOpts" hidden>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>波动 ±<em id="browser-bgBrightRangeVal">30</em></span>
+                      <button type="button" class="btn-reset" data-source="browser" data-reset="ambient_bright_range">重置</button>
+                    </div>
+                    <input id="browser-bgBrightRange" type="range" min="0" max="50" value="30" data-source="browser" data-key="ambient_bright_range" />
+                  </div>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>平滑 <em id="browser-bgBrightSmoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="browser" data-reset="ambient_bright_smooth">重置</button>
+                    </div>
+                    <input id="browser-bgBrightSmooth" type="range" min="0" max="100" value="20" data-source="browser" data-key="ambient_bright_smooth" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sync-block">
+              <div class="sync-block-title">取色与退出</div>
+              <label class="field compact">
+                <span>取色屏幕</span>
+                <select id="browser-displaySelect" data-source="browser"></select>
+              </label>
+              <div class="field compact">
+                <span>取色区域</span>
+                <div class="seg" id="browser-regionSeg" data-source="browser" role="group">
+                  <button type="button" class="seg-btn active" data-region="window">窗口中部</button>
+                  <button type="button" class="seg-btn" data-region="top">窗口顶部</button>
+                  <button type="button" class="seg-btn" data-region="full">窗口大范围</button>
+                </div>
+                <span class="field-hint" id="browser-captureHint">优先采浏览器播放窗 · 请关弹幕</span>
+              </div>
+              <label class="field compact">
+                <span>退出播放后</span>
+                <select id="browser-exitSelect" data-source="browser">
+                  <option value="ambient_mode">氛围灯模式（默认色）</option>
+                  <option value="restore">恢复同步前状态</option>
+                  <option value="off_ambient">关闭氛围灯</option>
+                </select>
+              </label>
+            </div>
+            </div>
+          </div>
+
+          <!-- 屏幕 -->
+          <div class="card source-panel source-accordion" id="screenCol" data-source="screen">
+            <div class="source-col-head">
+              <div>
+                <strong>屏幕</strong>
+                <p class="source-hint" id="screenHint">跟整屏、前台窗或自选区域</p>
+              </div>
+              <div class="source-head-actions">
+                <button type="button" class="source-expand-btn" data-expand-for="screen" aria-expanded="false" aria-label="展开设置" title="展开设置">
+                  <span class="expand-ico" aria-hidden="true"></span>
+                </button>
+                <button class="toggle" id="screenEnable" aria-pressed="false" aria-label="屏幕同步"></button>
+              </div>
+            </div>
+            <p class="source-status" id="screenLine">未开启</p>
+            <div class="source-body">
+
+            <div class="sync-block">
+              <div class="sync-block-title">跟随内容</div>
+              <div class="channel-list">
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>氛围灯颜色</strong><span>跟色到氛围灯</span></div>
+                  <input type="checkbox" id="screen-chColor" checked data-source="screen" data-ch="ambient_color" />
+                </label>
+                <div class="channel-opts" id="screen-groupColorOpts">
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>跟色平滑 <em id="screen-smoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="screen" data-reset="color_smooth">重置</button>
+                    </div>
+                    <input id="screen-colorSmooth" type="range" min="0" max="100" value="20" data-source="screen" data-key="color_smooth" />
+                  </div>
+                </div>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>主灯亮度</strong><span>基础亮度 ± 波动</span></div>
+                  <input type="checkbox" id="screen-chMainBright" data-source="screen" data-ch="main_brightness" />
+                </label>
+                <div class="channel-opts" id="screen-groupMainBrightOpts" hidden>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>波动 ±<em id="screen-mainBrightRangeVal">5</em></span>
+                      <button type="button" class="btn-reset" data-source="screen" data-reset="main_bright_range">重置</button>
+                    </div>
+                    <input id="screen-mainBrightRange" type="range" min="0" max="50" value="5" data-source="screen" data-key="main_bright_range" />
+                  </div>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>平滑 <em id="screen-mainBrightSmoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="screen" data-reset="main_bright_smooth">重置</button>
+                    </div>
+                    <input id="screen-mainBrightSmooth" type="range" min="0" max="100" value="20" data-source="screen" data-key="main_bright_smooth" />
+                  </div>
+                </div>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>氛围灯亮度</strong><span>基础亮度 ± 波动</span></div>
+                  <input type="checkbox" id="screen-chBgBright" data-source="screen" data-ch="ambient_brightness" />
+                </label>
+                <div class="channel-opts" id="screen-groupBgBrightOpts" hidden>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>波动 ±<em id="screen-bgBrightRangeVal">30</em></span>
+                      <button type="button" class="btn-reset" data-source="screen" data-reset="ambient_bright_range">重置</button>
+                    </div>
+                    <input id="screen-bgBrightRange" type="range" min="0" max="50" value="30" data-source="screen" data-key="ambient_bright_range" />
+                  </div>
+                  <div class="field compact">
+                    <div class="field-head">
+                      <span>平滑 <em id="screen-bgBrightSmoothVal">20</em></span>
+                      <button type="button" class="btn-reset" data-source="screen" data-reset="ambient_bright_smooth">重置</button>
+                    </div>
+                    <input id="screen-bgBrightSmooth" type="range" min="0" max="100" value="20" data-source="screen" data-key="ambient_bright_smooth" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sync-block">
+              <div class="sync-block-title">取色与退出</div>
+              <label class="field compact">
+                <span>取色屏幕</span>
+                <select id="screen-displaySelect" data-source="screen"></select>
+              </label>
+              <div class="field compact">
+                <span>取色目标</span>
+                <div class="seg" id="screen-captureTargetSeg" data-source="screen" role="group">
+                  <button type="button" class="seg-btn" data-capture-target="display">整屏</button>
+                  <button type="button" class="seg-btn active" data-capture-target="front_window">前台窗口</button>
+                  <button type="button" class="seg-btn" data-capture-target="user_rect">自选区域</button>
+                </div>
+                <div class="btn-row" id="screen-pickRegionRow" style="margin-top:8px" hidden>
+                  <button type="button" class="btn ghost" id="screen-pickRegion">框选区域</button>
+                </div>
+                <span class="field-hint" id="screen-captureHint">选择整屏 / 前台窗口 / 自选区域</span>
+                <span class="field-hint" id="screen-userRectHint"></span>
+              </div>
+              <div class="field compact">
+                <span>可跟条件</span>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>开关即跟</strong><span>打开后始终可跟</span></div>
+                  <input type="checkbox" id="screen-elig-always" />
+                </label>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>目标有效</strong><span>有屏 / 有窗 / 已框选</span></div>
+                  <input type="checkbox" id="screen-elig-target_valid" checked />
+                </label>
+                <label class="channel-row">
+                  <div class="channel-meta"><strong>仅全屏</strong><span>目标近全屏时才跟</span></div>
+                  <input type="checkbox" id="screen-elig-fullscreen_only" />
+                </label>
+              </div>
+              <div class="field compact" id="screen-regionField">
+                <span>窗口内采样</span>
+                <div class="seg" id="screen-regionSeg" data-source="screen" role="group">
+                  <button type="button" class="seg-btn active" data-region="window">中部</button>
+                  <button type="button" class="seg-btn" data-region="top">顶部</button>
+                  <button type="button" class="seg-btn" data-region="full">大范围</button>
+                </div>
+                <span class="field-hint">仅「前台窗口」时生效</span>
+              </div>
+              <label class="field compact">
+                <span>退出后</span>
+                <select id="screen-exitSelect" data-source="screen">
+                  <option value="ambient_mode">氛围灯模式（默认色）</option>
+                  <option value="restore">恢复同步前状态</option>
+                  <option value="off_ambient">关闭氛围灯</option>
+                </select>
+              </label>
+            </div>
+            </div>
+          </div>
+
+          <div class="card" id="deviceCard">
+            <div class="card-head">
+              <h2>设备</h2>
+              <span class="pill" id="connPill">离线</span>
+            </div>
+            <label class="field compact">
+              <span>灯具 IP</span>
+              <input id="hostInput" type="text" spellcheck="false" placeholder="192.168.x.x" />
+            </label>
+            <div class="btn-row">
+              <button class="btn ghost" id="btnDiscover">发现</button>
+              <button class="btn primary" id="btnConnect">连接</button>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn ghost" id="btnInstallIina">安装 IINA 插件</button>
+            </div>
+            <label class="check launch">
+              <input type="checkbox" id="launchAtLogin" /> 登录时启动本应用
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <footer class="dock">
+        <button class="dock-btn" id="mainPower" aria-pressed="false">
+          <span class="dock-dot"></span>
+          <span class="power-orb">OFF</span>
+          <span class="dock-label">屏幕灯</span>
+        </button>
+        <button class="dock-btn" id="bgPower" aria-pressed="false">
+          <span class="dock-dot"></span>
+          <span class="power-orb">OFF</span>
+          <span class="dock-label">氛围灯</span>
+        </button>
+      </footer>
+
+      <div class="setup-banner" id="setupBanner" hidden>
+        <span>还差几步就能跟色</span>
+        <button type="button" class="btn-reset" id="btnContinueSetup">继续设置</button>
+      </div>
+
+      <div class="onboard" id="onboard" hidden>
+        <div class="onboard-card">
+          <p class="onboard-step" id="onboardStepLabel">第 1 步 · 共 3 步</p>
+          <h2 id="onboardTitle">连接挂灯</h2>
+          <p class="onboard-desc" id="onboardDesc">请打开易来 App 里的局域网控制，然后发现或填写灯的 IP。</p>
+          <div id="onboardBody"></div>
+          <p class="onboard-msg" id="onboardMsg"></p>
+          <div class="btn-row">
+            <button type="button" class="btn ghost" id="onboardSkip">稍后</button>
+            <button type="button" class="btn primary" id="onboardNext">下一步</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 模式详情 -->
+      <div class="sheet" id="modeSheet" hidden>
+        <header class="sheet-top">
+          <button type="button" class="icon-btn" id="modeSheetBack" aria-label="返回">‹</button>
+          <h2>模式详情</h2>
+          <span class="sheet-spacer"></span>
+        </header>
+        <div class="sheet-body">
+          <div class="card row-card">
+            <span>模式名称</span>
+            <strong id="modeNameLabel">办公模式</strong>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>屏幕灯</h2>
+              <button class="toggle" id="modeMainToggle" aria-pressed="true"></button>
+            </div>
+            <div class="tag-row" id="modeMainTags">
+              <span class="tag">亮度100%</span>
+              <span class="tag">色温4000K</span>
+            </div>
+            <button type="button" class="btn-edit" id="modeEditMain">编辑</button>
+          </div>
+          <div class="card glow-amb">
+            <div class="card-head">
+              <h2>氛围灯</h2>
+              <button class="toggle" id="modeBgToggle" aria-pressed="true"></button>
+            </div>
+            <div class="tag-row" id="modeBgTags">
+              <span class="tag">静态</span>
+              <span class="mini-swatch" id="modeBgSwatch"></span>
+              <span class="tag">亮度50%</span>
+            </div>
+            <button type="button" class="btn-edit" id="modeEditBg">编辑</button>
+          </div>
+        </div>
+        <div class="sheet-actions">
+          <button type="button" class="btn ghost" id="modeReset">重置</button>
+          <button type="button" class="btn primary" id="modeSave">保存</button>
+        </div>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
