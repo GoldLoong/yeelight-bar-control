@@ -47,6 +47,13 @@
 
 仓库里的 `config.json` 不会提交。
 
+### 下载
+
+安装包在 [Releases](https://github.com/GoldLoong/yeelight-bar-control/releases) 的 **0.2.0**：
+
+- 主应用：解压后拖进「应用程序」。第一次若被系统拦住，在 Finder 里右键，选择「打开」
+- IINA 插件、Chrome 扩展、Safari 工程也单独附在同一发布里。主应用里已经带上这三份，应用内可以安装
+
 ### 跑起来
 
 ```bash
@@ -136,6 +143,13 @@ Set the lamp address in config. The template is `config.example.json`. The file 
 `~/Library/Application Support/com.yeelightbar.control/config.json`
 
 The `config.json` in this repository is not committed.
+
+### Download
+
+Installers are on the **0.2.0** [release](https://github.com/GoldLoong/yeelight-bar-control/releases):
+
+- Main app: unzip it and move it to Applications. If macOS blocks the first launch, right-click the app in Finder and choose Open
+- The IINA plugin, the Chrome extension, and the Safari project are attached separately. The main app already includes all three, and can install them from its window
 
 ### Run it
 

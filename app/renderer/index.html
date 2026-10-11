@@ -372,9 +372,10 @@
             <p class="source-status" id="browserLine">未开启</p>
             <div class="source-body">
             <div class="btn-row ext-install-row">
-              <button type="button" class="btn ghost" id="btnInstallChromeExt">Chrome 扩展</button>
-              <button type="button" class="btn ghost" id="btnInstallSafariExt">Safari 扩展</button>
+              <button type="button" class="btn ghost" id="btnInstallChromeExt" title="Load the Chrome or Edge extension for Bilibili">安装 Chrome 扩展</button>
+              <button type="button" class="btn ghost" id="btnInstallSafariExt" title="Open the Safari extension project in Xcode">打开 Safari 扩展</button>
             </div>
+            <p class="field-hint ext-install-note">Chrome / Edge 加载弹出的文件夹，用来跟哔哩哔哩。Safari 需用 Xcode 运行，再在 Safari 设置里启用。<span class="hint-en">Chrome or Edge: load the opened folder for Bilibili. Safari: run the project in Xcode, then enable it in Safari Settings.</span></p>
 
             <div class="sync-block">
               <div class="sync-block-title">跟随内容</div>
@@ -607,8 +608,9 @@
               <button class="btn primary" id="btnConnect">连接</button>
             </div>
             <div class="btn-row">
-              <button type="button" class="btn ghost" id="btnInstallIina">安装 IINA 插件</button>
+              <button type="button" class="btn ghost" id="btnInstallIina" title="Install the IINA plugin for local films">安装 IINA 插件</button>
             </div>
+            <p class="field-hint">本地电影跟色。安装后请完全退出 IINA（Cmd+Q）再打开。<span class="hint-en">For local films. Quit IINA completely, then open it again.</span></p>
             <label class="check launch">
               <input type="checkbox" id="launchAtLogin" /> 登录时启动本应用
             </label>

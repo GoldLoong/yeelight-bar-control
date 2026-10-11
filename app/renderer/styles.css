@@ -1142,6 +1142,15 @@ input[type="range"]::-webkit-slider-thumb {
   line-height: 1.35;
 }
 
+.hint-en {
+  display: block;
+  margin-top: 2px;
+}
+
+.ext-install-note {
+  margin: 0 0 8px;
+}
+
 .field input,
 .field select {
   width: 100%;

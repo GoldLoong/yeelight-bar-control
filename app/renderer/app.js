@@ -1442,7 +1442,7 @@ function renderOnboard() {
   } else {
     title.textContent = "安装同步配套";
     desc.textContent =
-      "一键安装 IINA 插件；Chrome 扩展需在扩展页加载刚才打开的文件夹（先开开发者模式）。Safari 本版不自动装。";
+      "IINA 插件用于本地电影，点一次即可装好，然后完全退出并重开 IINA。Chrome 扩展用于哔哩哔哩：先开开发者模式，再加载弹出的文件夹。Safari 需用 Xcode 运行后再启用。 / The IINA plugin follows local films. The Chrome extension follows Bilibili. Safari is enabled after an Xcode run.";
     next.textContent = "完成";
     body.innerHTML = `
       <div class="btn-row">
