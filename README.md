@@ -49,11 +49,11 @@
 
 ### 安装
 
-文件在 [Releases](https://github.com/GoldLoong/yeelight-bar-control/releases) 的 **0.2.0**。主应用里已经带上 IINA 插件、Chrome 扩展和 Safari 工程，也可以下载单独的压缩包。
+文件在 [Releases](https://github.com/GoldLoong/yeelight-bar-control/releases) 的 **0.9.0**。主应用里已经带上 IINA 插件、Chrome 扩展和 Safari 工程，也可以下载单独的压缩包。
 
 #### 主应用
 
-1. 下载 `YeelightBar-0.2.0-mac.zip`，解压。
+1. 下载 `YeelightBar-0.9.0-mac.zip`，解压。
 2. 把 **Yeelight 显示器挂灯** 拖进「应用程序」。
 3. 第一次双击时，系统会说：Apple 无法验证「Yeelight 显示器挂灯」是否包含可能危害 Mac 安全或泄漏隐私的恶意软件。这是因为这份应用没有经过 Apple 公证。它只在你的电脑上控制局域网里的灯，不会把画面上传到网上。
 4. 在提示里点 **完成**。不要点「移到废纸篓」。
@@ -75,13 +75,13 @@
 2. 完全退出 IINA（Cmd+Q），再打开。
 3. 确认插件 **Yeelight Bar Sync** 已启用，然后播放一段视频。
 
-从源码安装时，也可以运行 `./scripts/install-iina-plugin.sh`，之后同样要重开 IINA。单独的压缩包是 `YeelightBar-iina-plugin-0.2.0.zip`。
+从源码安装时，也可以运行 `./scripts/install-iina-plugin.sh`，之后同样要重开 IINA。单独的压缩包是 `YeelightBar-iina-plugin-0.9.0.zip`。
 
 #### Chrome / Edge 扩展
 
 用来跟哔哩哔哩。跟色时请关掉弹幕。
 
-1. 在挂灯应用的「浏览器」里点 **安装 Chrome 扩展**，Finder 会打开扩展文件夹。也可以改用 `YeelightBar-chrome-extension-0.2.0.zip`，解压后使用里面的文件夹。
+1. 在挂灯应用的「浏览器」里点 **安装 Chrome 扩展**，Finder 会打开扩展文件夹。也可以改用 `YeelightBar-chrome-extension-0.9.0.zip`，解压后使用里面的文件夹。
 2. 打开 `chrome://extensions`（Edge 是 `edge://extensions`），打开右上角的 **开发者模式**。
 3. 点 **加载已解压的扩展程序**，选中刚才的文件夹。
 4. 打开任意哔哩哔哩视频并播放。挂灯窗口应显示浏览器正在播放。
@@ -94,7 +94,7 @@
 同样用来跟哔哩哔哩。Safari 不能直接加载文件夹。
 
 1. 安装完整的 Xcode。只装命令行工具不够。
-2. 解压 `YeelightBar-safari-extension-0.2.0.zip`，或使用仓库里的 `browser-extension/safari`。
+2. 解压 `YeelightBar-safari-extension-0.9.0.zip`，或使用仓库里的 `browser-extension/safari`。
 3. 用 Xcode 打开 `YeelightBarSync.xcodeproj`。顶部选 **My Mac**，点 **Run** 一次。签名时选自己的 Apple ID 即可。
 4. 打开 **Safari → 设置 → 扩展**，勾选 **Yeelight Bar Sync (Web)**。
 5. 允许它访问 **bilibili.com** 和 **127.0.0.1**。
@@ -193,11 +193,11 @@ The `config.json` in this repository is not committed.
 
 ### Install
 
-The files are on the **0.2.0** [release](https://github.com/GoldLoong/yeelight-bar-control/releases). The main app already includes the IINA plugin, the Chrome extension, and the Safari project. Each is also attached on its own.
+The files are on the **0.9.0** [release](https://github.com/GoldLoong/yeelight-bar-control/releases). The main app already includes the IINA plugin, the Chrome extension, and the Safari project. Each is also attached on its own.
 
 #### Main app
 
-1. Download `YeelightBar-0.2.0-mac.zip` and unzip it.
+1. Download `YeelightBar-0.9.0-mac.zip` and unzip it.
 2. Move **Yeelight 显示器挂灯** into Applications.
 3. The first double-click says Apple cannot verify whether Yeelight 显示器挂灯 contains malware that may harm your Mac or compromise your privacy. The app is not notarized by Apple. It controls the lamp on your local network and does not upload the picture.
 4. Click **Done** in the alert. Leave the app where it is.
@@ -219,13 +219,13 @@ This follows local films.
 2. Quit IINA completely (Cmd+Q), then open it again.
 3. Confirm the **Yeelight Bar Sync** plugin is enabled, and play a video.
 
-From a source checkout you can also run `./scripts/install-iina-plugin.sh`, then reopen IINA the same way. The separate archive is `YeelightBar-iina-plugin-0.2.0.zip`.
+From a source checkout you can also run `./scripts/install-iina-plugin.sh`, then reopen IINA the same way. The separate archive is `YeelightBar-iina-plugin-0.9.0.zip`.
 
 #### Chrome / Edge extension
 
 This follows Bilibili. Turn danmaku off while sampling color.
 
-1. In the lamp app, open the Browser section and click **安装 Chrome 扩展**. Finder opens the extension folder. Or unzip `YeelightBar-chrome-extension-0.2.0.zip` and use that folder.
+1. In the lamp app, open the Browser section and click **安装 Chrome 扩展**. Finder opens the extension folder. Or unzip `YeelightBar-chrome-extension-0.9.0.zip` and use that folder.
 2. Open `chrome://extensions` (Edge: `edge://extensions`) and turn on **Developer mode**.
 3. Click **Load unpacked** and select that folder.
 4. Open any Bilibili video and press play. The lamp window should show the browser playing.
@@ -238,7 +238,7 @@ If it says no extension status has arrived, reload the extension, refresh the Bi
 This also follows Bilibili. Safari cannot load a plain folder.
 
 1. Install the full Xcode app. The command-line tools alone are not enough.
-2. Unzip `YeelightBar-safari-extension-0.2.0.zip`, or use `browser-extension/safari` from the repository.
+2. Unzip `YeelightBar-safari-extension-0.9.0.zip`, or use `browser-extension/safari` from the repository.
 3. Open `YeelightBarSync.xcodeproj` in Xcode. Choose **My Mac** at the top and click **Run** once. When signing, your own Apple ID is enough.
 4. Open **Safari → Settings → Extensions** and enable **Yeelight Bar Sync (Web)**.
 5. Allow it on **bilibili.com** and **127.0.0.1**.
