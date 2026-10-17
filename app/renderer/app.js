@@ -587,8 +587,154 @@ async function refreshConfig() {
     bgHex = ambientFx.hex;
     setAmbientFxUi(ambientFx.fx);
   }
+  applyDriveUi(data);
   return data;
 }
+
+let driveMode = "picture";
+
+function applyDriveUi(data) {
+  driveMode = data?.drive_mode === "music" ? "music" : "picture";
+  document.body.classList.toggle("drive-music", driveMode === "music");
+  document.querySelectorAll(".drive-switch .seg-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.drive === driveMode);
+  });
+  const music = data?.music || {};
+  if (driveMode === "music") {
+    const bright = Number(music.bright ?? 40);
+    $("bgBright").value = String(bright);
+    $("bgBrightVal").textContent = String(bright);
+  }
+  if ($("musicBrightHint")) $("musicBrightHint").hidden = driveMode !== "music";
+  if ($("driveStatus") && !data?.statusError) {
+    $("driveStatus").textContent =
+      driveMode === "music"
+        ? "音乐跃动开着，氛围灯跟声音。屏幕灯可以照常用模式改"
+        : "追色按优先级跟画面";
+  }
+  const input = music.input === "mic" ? "mic" : "system";
+  document.querySelectorAll("#musicInputSeg .seg-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.input === input);
+  });
+  const styles = new Set(music.styles || ["beat"]);
+  for (const id of ["musicStyleBeat", "musicStyleLoud", "musicStyleSpec"]) {
+    const el = $(id);
+    if (el) el.checked = styles.has(el.dataset.style);
+  }
+  const palette = music.palette === "ambient" ? "ambient" : "builtin";
+  document.querySelectorAll("#musicPaletteSeg .seg-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.palette === palette);
+  });
+  if ($("bgPower")) $("bgPower").disabled = driveMode === "music";
+}
+
+async function setDrive(mode) {
+  let status = 0;
+  let data = null;
+  try {
+    if (mode === "music") {
+      const input =
+        document.querySelector("#musicInputSeg .seg-btn.active")?.dataset?.input || "system";
+      // 日常切换只校验，不弹权限；新版本首次启动已在主进程申请过。
+      await window.yeelight?.ensureMusicPermission?.(input, false);
+    }
+    const res = await api("/api/drive", { method: "POST", body: { mode } });
+    status = res?.status || 0;
+    data = res?.data;
+  } catch (_) {
+    status = 0;
+  }
+  if (!data || status >= 400) {
+    const msg = data?.detail || "切换失败，本地服务未启动";
+    if ($("driveStatus")) $("driveStatus").textContent = msg;
+    if ($("musicStatus")) $("musicStatus").textContent = msg;
+    return;
+  }
+  applyDriveUi({ drive_mode: data?.drive_mode, music: data?.music });
+  await refreshMusicStatus();
+}
+
+function checkedMusicStyles() {
+  return ["musicStyleBeat", "musicStyleLoud", "musicStyleSpec"]
+    .map((id) => $(id))
+    .filter((el) => el && el.checked)
+    .map((el) => el.dataset.style);
+}
+
+async function patchMusic(partial) {
+  if (partial?.input) {
+    await window.yeelight?.ensureMusicPermission?.(partial.input, false);
+  }
+  const { data } = await api("/api/music", { method: "PATCH", body: partial });
+  if (data?.music) applyDriveUi({ drive_mode: data.drive_mode || driveMode, music: data.music });
+  await refreshMusicStatus();
+}
+
+function setMusicPermActionsVisible(show) {
+  const el = $("musicPermActions");
+  if (el) el.hidden = !show;
+}
+
+async function refreshMusicStatus() {
+  // 不再每次轮询写权限文件 / 触发探测，避免和 TCC 打架。
+  const { data } = await api("/api/music");
+  if (!data || !$("musicStatus")) return;
+  const err = data.status?.error;
+  const input = data.music?.input === "mic" ? "麦克风" : "电脑播放";
+  if (data.drive_mode !== "music") {
+    $("musicStatus").textContent = "未开启。在模式页或菜单切换追色 / 音乐跃动";
+    setMusicPermActionsVisible(false);
+    return;
+  }
+  $("musicStatus").textContent = err || (data.status?.running ? `正在听${input}` : "正在启动");
+  const needScreen =
+    data.music?.input !== "mic" &&
+    !!(err && (String(err).includes("屏幕录制") || String(err).includes("录制权限")));
+  setMusicPermActionsVisible(needScreen);
+  if ($("driveStatus")) {
+    $("driveStatus").textContent = err || `音乐跃动 · 正在听${input}`;
+  }
+}
+
+$("btnMusicPermSettings")?.addEventListener("click", async () => {
+  // 会先探测登记本程序，再打开设置（不只是空开页面）
+  await window.yeelight?.openScreenRecordingSettings?.();
+});
+
+$("btnMusicPermRetry")?.addEventListener("click", async () => {
+  const input =
+    document.querySelector("#musicInputSeg .seg-btn.active")?.dataset?.input || "system";
+  // force：更新后旧权限失效时必须重新触达系统 API
+  await window.yeelight?.ensureMusicPermission?.(input, true, true);
+  if (driveMode !== "music") await setDrive("music");
+  else await patchMusic({ input });
+  await refreshMusicStatus();
+});
+
+document.querySelectorAll(".drive-switch .seg-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.drive && btn.dataset.drive !== driveMode) setDrive(btn.dataset.drive);
+  });
+});
+
+document.querySelectorAll("#musicInputSeg .seg-btn").forEach((btn) => {
+  btn.addEventListener("click", () => patchMusic({ input: btn.dataset.input }));
+});
+
+document.querySelectorAll("#musicPaletteSeg .seg-btn").forEach((btn) => {
+  btn.addEventListener("click", () => patchMusic({ palette: btn.dataset.palette }));
+});
+
+document.querySelectorAll(".music-checks input").forEach((el) => {
+  el.addEventListener("change", () => {
+    const styles = checkedMusicStyles();
+    if (!styles.length) {
+      el.checked = true;
+      return;
+    }
+    patchMusic({ styles: checkedMusicStyles() });
+  });
+});
 
 function fillSourceForm(source, p) {
   const ch = p.channels || {};
@@ -638,6 +784,9 @@ function fillSourceForm(source, p) {
     if (el) el.textContent = String(bbr);
   }
   setRegionSeg(source, p.region || "window");
+  const segEl = sid(source, "segmentColor");
+  if (segEl) segEl.checked = !!p.segment_color;
+  applySegmentRegionHints(source, !!p.segment_color);
   const exit = sid(source, "exitSelect");
   if (exit) exit.value = p.on_exit || "ambient_mode";
   fillDisplaySelect(sid(source, "displaySelect"), p.display_id);
@@ -654,6 +803,39 @@ function syncOptionVisibility(source) {
   hide("groupColorOpts", !colorOn);
   hide("groupMainBrightOpts", !mainOn);
   hide("groupBgBrightOpts", !bgOn);
+  const segOn = !!sid(source, "segmentColor")?.checked;
+  const segHint = sid(source, "segmentHint");
+  if (segHint) segHint.hidden = !(colorOn && segOn);
+  applySegmentRegionHints(source, colorOn && segOn);
+}
+
+/** 左右分色开启时：高亮「大范围/整屏」，弱化「顶部」；必要时自动切到大范围 */
+function applySegmentRegionHints(source, segmentOn) {
+  const seg = document.querySelector(`#${source}-regionSeg`);
+  if (seg) {
+    seg.querySelectorAll(".seg-btn").forEach((btn) => {
+      const r = btn.dataset.region;
+      btn.classList.toggle("preferred", !!segmentOn && r === "full");
+      btn.classList.toggle("dimmed", !!segmentOn && r === "top");
+    });
+  }
+  if (source === "screen") {
+    document.querySelectorAll("#screen-captureTargetSeg .seg-btn").forEach((btn) => {
+      const t = btn.dataset.captureTarget;
+      btn.classList.toggle("preferred", !!segmentOn && t === "display");
+      btn.classList.toggle("dimmed", !!segmentOn && t === "user_rect");
+    });
+  }
+}
+
+function maybeUpgradeRegionForSegment(source) {
+  const active = document.querySelector(`#${source}-regionSeg .seg-btn.active`);
+  const region = active?.dataset.region || "window";
+  if (region === "top") {
+    setRegionSeg(source, "full");
+    return "full";
+  }
+  return null;
 }
 
 function fillDisplaySelect(sel, selected) {
@@ -730,6 +912,8 @@ function setCaptureTargetSeg(target) {
     btn.classList.toggle("active", btn.dataset.captureTarget === target);
   });
   updateScreenTargetUi(target);
+  const segOn = !!sid("screen", "segmentColor")?.checked;
+  applySegmentRegionHints("screen", segOn);
 }
 
 function updateUserRectHint(rect) {
@@ -817,13 +1001,13 @@ function applyLampStateToUi(s, { force = false } = {}) {
     mainCt = Number(s.ct);
     drawCtWheel();
   }
-  if (s.bg_bright != null && s.bg_bright !== "") {
+  if (driveMode !== "music" && s.bg_bright != null && s.bg_bright !== "") {
     if (!channelSyncing("bg")) {
       $("bgBright").value = s.bg_bright;
       $("bgBrightVal").textContent = s.bg_bright;
     }
   }
-  if (s.bg_rgb_hex) {
+  if (driveMode !== "music" && s.bg_rgb_hex) {
     bgHex = String(s.bg_rgb_hex).toUpperCase();
     drawRgbWheel();
   }
@@ -1125,7 +1309,20 @@ for (const source of SOURCES) {
       const region = btn.dataset.region;
       setRegionSeg(source, region);
       patchSource(source, { region });
+      const segOn = !!sid(source, "segmentColor")?.checked;
+      applySegmentRegionHints(source, segOn);
     });
+  });
+  sid(source, "segmentColor")?.addEventListener("change", (e) => {
+    const on = !!e.target.checked;
+    const patch = { segment_color: on };
+    if (on) {
+      const upgraded = maybeUpgradeRegionForSegment(source);
+      if (upgraded) patch.region = upgraded;
+    }
+    syncOptionVisibility(source);
+    applySegmentRegionHints(source, on);
+    patchSource(source, patch);
   });
 }
 
@@ -1319,7 +1516,7 @@ $("bgBright").addEventListener(
   debounce((e) => {
     const bright = Number(e.target.value);
     $("bgBrightVal").textContent = bright;
-    if (ambientFx.fx === "static") {
+    if (driveMode === "music" || ambientFx.fx === "static") {
       pushBright("bg", bright);
     } else {
       pushAmbientFx({ bright });
@@ -1435,9 +1632,9 @@ function renderOnboard() {
     next.textContent = "我已授权，继续";
     body.innerHTML = `<button type="button" class="btn ghost" id="onboardPerm">打开屏幕录制设置</button>`;
     $("onboardPerm").addEventListener("click", async () => {
+      // 只打开设置，不调用 CGRequest（会反复弹系统授权框）。
       await window.yeelight?.openScreenRecordingSettings?.();
-      await api("/api/permissions/screen/request", { method: "POST" });
-      $("onboardMsg").textContent = "授权后回到这里点继续";
+      $("onboardMsg").textContent = "在列表里打开本应用后回到这里点继续";
     });
   } else {
     title.textContent = "安装同步配套";
@@ -1505,31 +1702,61 @@ $("onboardNext")?.addEventListener("click", async () => {
   await finishOnboard(true);
 });
 
+async function connectLocal() {
+  if ($("connText")) $("connText").textContent = "本地服务启动中";
+  const started = Date.now();
+  while (Date.now() - started < 90000) {
+    try {
+      await api("/api/health");
+      if ($("connText")) $("connText").textContent = "本地服务已就绪";
+      return true;
+    } catch (_) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  if ($("connText")) $("connText").textContent = "本地服务未启动";
+  return false;
+}
+
+async function fillAppVersion() {
+  const el = $("appVersion");
+  if (!el) return;
+  try {
+    const info = await window.yeelight?.appInfo?.();
+    if (info?.version) el.textContent = `版本 ${info.version}`;
+  } catch (_) {}
+}
+
 async function boot() {
   drawCtWheel();
   drawRgbWheel();
-  try {
-    await api("/api/health");
-    $("connText").textContent = "本地服务已就绪";
-    const data = await refreshConfig();
-    await loadModes();
-    await refreshState({ force: true });
-    await refreshSync();
-    setAmbientFxUi(ambientFx.fx);
-    const onboardDone = !!(data && data.onboarding && data.onboarding.complete);
-    if ($("setupBanner")) $("setupBanner").hidden = onboardDone;
-    if (!onboardDone) {
-      _onboardStep = 0;
-      setOnboardVisible(true);
-      renderOnboard();
+  fillAppVersion().catch(() => {});
+  const ready = await connectLocal();
+  if (ready) {
+    try {
+      const data = await refreshConfig();
+      await loadModes();
+      await refreshState({ force: true });
+      await refreshSync();
+      setAmbientFxUi(ambientFx.fx);
+      const onboardDone = !!(data && data.onboarding && data.onboarding.complete);
+      if ($("setupBanner")) $("setupBanner").hidden = onboardDone;
+      if (!onboardDone) {
+        _onboardStep = 0;
+        setOnboardVisible(true);
+        renderOnboard();
+      }
+    } catch (_) {
+      if ($("connText")) $("connText").textContent = "本地服务未启动";
     }
-  } catch (_) {
-    $("connText").textContent = "本地服务未启动";
   }
   // 同步状态：仅同步页可见时低频刷新；灯态仅启动/切页/回到前台
   setInterval(() => {
     const syncPanel = $("panel-sync");
     if (syncPanel && !syncPanel.hidden) refreshSync().catch(() => {});
+    if (driveMode === "music" || (syncPanel && !syncPanel.hidden)) {
+      refreshMusicStatus().catch(() => {});
+    }
   }, 2500);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {

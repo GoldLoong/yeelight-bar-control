@@ -5,6 +5,7 @@ from .capture import (
     find_media_window,
     invalidate_window_cache,
     list_displays,
+    SampleColor,
     sample_region_color,
 )
 from .engine import SyncEngine, SyncRuntimeState
@@ -28,6 +29,7 @@ __all__ = [
     "DisplayInfo",
     "IinaStatus",
     "MediaStatus",
+    "SampleColor",
     "SyncEngine",
     "SyncRuntimeState",
     "consume_browser_seek",

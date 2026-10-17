@@ -30,6 +30,11 @@
       <div class="panels">
         <!-- 模式 -->
         <section class="panel active" id="panel-mode" role="tabpanel">
+          <div class="drive-switch seg cols-2" role="group" aria-label="追色或音乐跃动">
+            <button type="button" class="seg-btn active" data-drive="picture" id="drivePicture">追色</button>
+            <button type="button" class="seg-btn" data-drive="music" id="driveMusic">音乐跃动</button>
+          </div>
+          <p class="mode-hint" id="driveStatus">追色按优先级跟画面</p>
           <div class="mode-grid">
             <div class="mode-card office" data-mode="office" role="button" tabindex="0">
               <button type="button" class="mode-gear-btn" data-mode="office" aria-label="编辑办公模式"></button>
@@ -52,7 +57,7 @@
               <span>休闲模式</span>
             </div>
           </div>
-          <p class="mode-hint">点选套用模式；点齿轮进入模式详情</p>
+          <p class="mode-hint">点选套用模式；点齿轮进入模式详情。音乐跃动开着时，这些模式只改屏幕灯</p>
         </section>
 
         <!-- 屏幕灯 -->
@@ -197,6 +202,7 @@
 
             <div class="slider-block">
               <div class="slider-label">亮度(<em id="bgBrightVal">40</em>%)</div>
+              <p class="field-hint" id="musicBrightHint" hidden>音乐跃动中，这是平时亮度或最大亮度</p>
               <div class="bright-row">
                 <span class="sun dim" aria-hidden="true">☀</span>
                 <input id="bgBright" type="range" min="1" max="100" value="40" />
@@ -216,6 +222,49 @@
 
         <!-- 同步 -->
         <section class="panel" id="panel-sync" role="tabpanel" hidden>
+          <div class="card music-panel" id="musicPanel">
+            <div class="card-head">
+              <div>
+                <h2>音乐跃动</h2>
+                <p class="card-sub" id="musicStatus">未开启</p>
+                <div class="music-perm-actions" id="musicPermActions" hidden>
+                  <button type="button" class="btn ghost" id="btnMusicPermSettings">打开屏幕录制设置</button>
+                  <button type="button" class="btn primary" id="btnMusicPermRetry">我已授权，重试</button>
+                  <p class="field-hint" style="margin: 4px 0 0; flex-basis: 100%">
+                    更新版本后若开关无效：在列表里删掉本应用，再点上方按钮重新出现后打开。
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div class="drive-switch seg cols-2" role="group" aria-label="追色或音乐跃动">
+              <button type="button" class="seg-btn active" data-drive="picture">追色</button>
+              <button type="button" class="seg-btn" data-drive="music">音乐跃动</button>
+            </div>
+            <div class="field">
+              <span class="field-label">听哪路声音</span>
+              <div class="seg cols-2" id="musicInputSeg" role="group">
+                <button type="button" class="seg-btn active" data-input="system">电脑播放</button>
+                <button type="button" class="seg-btn" data-input="mic">麦克风</button>
+              </div>
+            </div>
+            <div class="field">
+              <span class="field-label">效果</span>
+              <div class="music-checks">
+                <label><input type="checkbox" id="musicStyleBeat" data-style="beat" checked /><span>跟节拍跳</span></label>
+                <label><input type="checkbox" id="musicStyleLoud" data-style="loudness" /><span>跟音量亮</span></label>
+                <label><input type="checkbox" id="musicStyleSpec" data-style="spectrum" /><span>跟频谱分色</span></label>
+              </div>
+              <p class="field-hint">颜色跟着曲风走，换段大约半秒内跟上。节拍只在设定亮度里轻轻亮一下。<br />音量拉开强弱。频谱沿着当前颜色左暖右冷。</p>
+            </div>
+            <div class="field">
+              <span class="field-label">配色</span>
+              <div class="seg cols-2" id="musicPaletteSeg" role="group">
+                <button type="button" class="seg-btn active" data-palette="builtin">内置曲风色</button>
+                <button type="button" class="seg-btn" data-palette="ambient">氛围灯色表</button>
+              </div>
+            </div>
+          </div>
+
           <div class="card sync-panel">
             <div class="card-head">
               <div>
@@ -284,6 +333,14 @@
                     </div>
                     <input id="iina-colorSmooth" type="range" min="0" max="100" value="20" data-source="iina" data-key="color_smooth" />
                   </div>
+                  <label class="channel-row segment-row">
+                    <div class="channel-meta">
+                      <strong>左右分色跟屏</strong>
+                      <span>*会额外增加性能消耗！</span>
+                    </div>
+                    <input type="checkbox" id="iina-segmentColor" data-source="iina" data-bool="segment_color" />
+                  </label>
+                  <p class="field-hint" id="iina-segmentHint" hidden>分色时建议「窗口大范围」；顶部条带左右差异小</p>
                 </div>
                 <label class="channel-row">
                   <div class="channel-meta"><strong>主灯亮度</strong><span>基础亮度 ± 波动</span></div>
@@ -392,6 +449,14 @@
                     </div>
                     <input id="browser-colorSmooth" type="range" min="0" max="100" value="8" data-source="browser" data-key="color_smooth" />
                   </div>
+                  <label class="channel-row segment-row">
+                    <div class="channel-meta">
+                      <strong>左右分色跟屏</strong>
+                      <span>*会额外增加性能消耗！</span>
+                    </div>
+                    <input type="checkbox" id="browser-segmentColor" data-source="browser" data-bool="segment_color" />
+                  </label>
+                  <p class="field-hint" id="browser-segmentHint" hidden>分色时建议「窗口大范围」；顶部条带左右差异小</p>
                 </div>
                 <label class="channel-row">
                   <div class="channel-meta"><strong>主灯亮度</strong><span>基础亮度 ± 波动</span></div>
@@ -495,6 +560,14 @@
                     </div>
                     <input id="screen-colorSmooth" type="range" min="0" max="100" value="20" data-source="screen" data-key="color_smooth" />
                   </div>
+                  <label class="channel-row segment-row">
+                    <div class="channel-meta">
+                      <strong>左右分色跟屏</strong>
+                      <span>*会额外增加性能消耗！</span>
+                    </div>
+                    <input type="checkbox" id="screen-segmentColor" data-source="screen" data-bool="segment_color" />
+                  </label>
+                  <p class="field-hint" id="screen-segmentHint" hidden>分色时建议「整屏」或前台窗「大范围」；窄框左右差不明显</p>
                 </div>
                 <label class="channel-row">
                   <div class="channel-meta"><strong>主灯亮度</strong><span>基础亮度 ± 波动</span></div>
@@ -615,6 +688,8 @@
               <input type="checkbox" id="launchAtLogin" /> 登录时启动本应用
             </label>
           </div>
+
+          <p class="app-version" id="appVersion" aria-label="应用版本">版本 —</p>
         </section>
       </div>
 

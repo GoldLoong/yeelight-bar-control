@@ -57,6 +57,7 @@ class SourceSyncSettings(BaseModel):
     base_ambient_bright: int = 40
     main_bright_range: int = 5
     ambient_bright_range: int = 30
+    segment_color: bool = False
     on_pause: Literal["keep_last"] = "keep_last"
     on_exit: Literal["ambient_mode", "restore", "off_ambient"] = "ambient_mode"
     exit_mode: str = "ambient_mode"
@@ -144,6 +145,7 @@ def _copy_flat_into_source(flat: dict[str, Any]) -> dict[str, Any]:
         "base_ambient_bright",
         "main_bright_range",
         "ambient_bright_range",
+        "segment_color",
         "on_pause",
         "on_exit",
         "exit_mode",
@@ -349,6 +351,28 @@ class OnboardingState(BaseModel):
     complete: bool = False
 
 
+class MusicSettings(BaseModel):
+    """音乐跃动。亮度和追色用的氛围灯亮度分开记。"""
+
+    input: Literal["system", "mic"] = "system"
+    styles: list[Literal["beat", "loudness", "spectrum"]] = Field(
+        default_factory=lambda: ["beat"]
+    )
+    palette: Literal["builtin", "ambient"] = "builtin"
+    bright: int = 40
+
+    @model_validator(mode="after")
+    def _normalize_styles(self) -> MusicSettings:
+        allowed = ("beat", "loudness", "spectrum")
+        seen: list[str] = []
+        for item in self.styles or []:
+            if item in allowed and item not in seen:
+                seen.append(item)
+        self.styles = seen or ["beat"]  # type: ignore[assignment]
+        self.bright = max(1, min(100, int(self.bright)))
+        return self
+
+
 class AppConfig(BaseModel):
     host: str = "192.168.0.116"
     tcp_port: int = 55443
@@ -360,6 +384,8 @@ class AppConfig(BaseModel):
     sync: SyncConfig = Field(default_factory=SyncConfig)
     modes: dict[str, ModePreset] = Field(default_factory=default_modes)
     ambient: AmbientState = Field(default_factory=AmbientState)
+    drive_mode: Literal["picture", "music"] = "picture"
+    music: MusicSettings = Field(default_factory=MusicSettings)
 
 
 def ensure_config() -> AppConfig:

@@ -31,6 +31,7 @@ const SOURCE_LABEL = { iina: "IINA", browser: "浏览器", screen: "屏幕" };
 
 let lastModeId = null;
 let modesCache = {};
+let driveMode = "picture";
 
 function hexNorm(h) {
   return String(h || "")
@@ -103,7 +104,10 @@ async function refresh() {
     setToggle($("trayBgPower"), bgOn);
     setToggle($("traySync"), !!(cfg && cfg.sync && cfg.sync.enabled));
     const bright = Number(s.bright ?? cfg?.sync?.iina?.base_main_bright ?? 50);
-    const bgBright = Number(s.bg_bright ?? cfg?.ambient?.bright ?? 40);
+    const bgBright =
+      cfg?.drive_mode === "music"
+        ? Number(cfg?.music?.bright ?? 40)
+        : Number(s.bg_bright ?? cfg?.ambient?.bright ?? 40);
     const ct = Number(s.ct ?? 4000);
     $("trayMainBright").value = String(bright);
     $("trayMainBrightVal").textContent = `${bright}%`;
@@ -116,6 +120,7 @@ async function refresh() {
       b.classList.toggle("active", (b.dataset.hex || "").toUpperCase() === hex);
     });
     $("traySyncHint").textContent = syncHintText(cfg, sync);
+    setTrayDrive(cfg?.drive_mode);
     $("trayStatus").textContent = st?.connected === false ? "未连接" : "就绪";
     setActiveMode(matchMode(s, cfg));
   } catch (_) {
@@ -131,7 +136,18 @@ $("trayMainPower").addEventListener("click", () => {
   api("/api/power", { method: "POST", body: { target: "main", on } }).catch(() => {});
 });
 
+function setTrayDrive(mode) {
+  driveMode = mode === "music" ? "music" : "picture";
+  document.querySelectorAll("#trayDrive button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.drive === driveMode);
+  });
+  const root = $("trayRoot");
+  if (root) root.classList.toggle("drive-music", driveMode === "music");
+  if ($("trayBgPower")) $("trayBgPower").disabled = driveMode === "music";
+}
+
 $("trayBgPower").addEventListener("click", () => {
+  if (driveMode === "music") return;
   const on = $("trayBgPower").getAttribute("aria-pressed") !== "true";
   setToggle($("trayBgPower"), on);
   lastModeId = null;
@@ -175,6 +191,16 @@ $("trayCt").addEventListener(
   }, 80)
 );
 
+document.querySelectorAll("#trayDrive button").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    if (btn.dataset.drive === "music") {
+      await window.yeelight?.ensureMusicPermission?.("system", false);
+    }
+    await api("/api/drive", { method: "POST", body: { mode: btn.dataset.drive } });
+    refresh();
+  });
+});
+
 document.querySelectorAll(".tray-mode").forEach((btn) => {
   btn.addEventListener("click", () => {
     lastModeId = btn.dataset.mode;
@@ -185,6 +211,7 @@ document.querySelectorAll(".tray-mode").forEach((btn) => {
 
 document.querySelectorAll("#traySwatches button").forEach((btn) => {
   btn.addEventListener("click", () => {
+    if (driveMode === "music") return;
     lastModeId = null;
     api("/api/bg/rgb", { method: "POST", body: { hex: btn.dataset.hex } }).then(() => refresh());
   });
