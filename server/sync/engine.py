@@ -107,10 +107,23 @@ class SyncEngine:
 
         self._color_lock = threading.Lock()
         self._current = [36.0, 40.0, 48.0]
+        self._current_l = [36.0, 40.0, 48.0]
+        self._current_r = [36.0, 40.0, 48.0]
+        self._segment_color = False
+        self._last_sent_l: int | None = None
+        self._last_sent_r: int | None = None
         # 平滑后的亮度（float），分别给主灯 / 氛围灯
         self._cur_main_bright = 50.0
         self._cur_bg_bright = 40.0
         self._bright_lock = threading.Lock()
+        self._music_hold = False
+
+    def set_music_hold(self, hold: bool) -> None:
+        """音乐跃动占住氛围灯时，追色不再往灯上写。"""
+        self._music_hold = bool(hold)
+
+    def picture_active(self) -> bool:
+        return bool(self._playing)
 
     def start(self) -> None:
         if self._ctrl_thread and self._ctrl_thread.is_alive():
@@ -181,6 +194,7 @@ class SyncEngine:
         )
         self._capture_display_id = params.display_id
         self._capture_region = params.region
+        self._segment_color = bool(getattr(params, "segment_color", False))
         if source == "browser":
             browser = cfg.sync.browser
             self._browser_owners = list(browser.owners or [])
@@ -232,7 +246,11 @@ class SyncEngine:
             rgb = (36, 40, 48)
         with self._color_lock:
             self._current = [float(rgb[0]), float(rgb[1]), float(rgb[2])]
+            self._current_l = [float(rgb[0]), float(rgb[1]), float(rgb[2])]
+            self._current_r = [float(rgb[0]), float(rgb[1]), float(rgb[2])]
         self._last_sent_rgb = None
+        self._last_sent_l = None
+        self._last_sent_r = None
 
     def _control_loop(self) -> None:
         try:
@@ -428,7 +446,7 @@ class SyncEngine:
         except Exception:
             pass
         while not self._stop.is_set():
-            if not self._playing:
+            if self._music_hold or not self._playing:
                 time.sleep(0.15)
                 continue
             cfg = self._config()
@@ -466,6 +484,8 @@ class SyncEngine:
                     self._screen_capture_target if media_source == "screen" else None
                 )
                 user_rect = self._screen_user_rect if media_source == "screen" else None
+                segment = bool(getattr(params, "segment_color", False))
+                self._segment_color = segment
                 capture_key = (
                     display_id,
                     region,
@@ -474,6 +494,7 @@ class SyncEngine:
                     prefer_titles,
                     cap_target,
                     tuple(sorted((user_rect or {}).items())) if user_rect else None,
+                    segment,
                 )
                 if capture_key != self._applied_capture_key:
                     self._applied_capture_key = capture_key
@@ -484,7 +505,7 @@ class SyncEngine:
                     self._force_snap = True
                     self._reset_colors()
 
-                color = sample_region_color(
+                sample = sample_region_color(
                     display_id,
                     region,
                     media_source=media_source,
@@ -493,24 +514,48 @@ class SyncEngine:
                     capture_target=cap_target,
                     user_rect=user_rect,
                     prefer_titles=prefer_titles,
+                    split_lr=segment,
                 )
                 force = self._force_snap
                 # 亮度跟平滑后的色，避免色已抹平、亮度仍跟着原始采样抖
-                bright_rgb = color
+                bright_rgb = sample.rgb
                 if need_color:
-                    out = self._apply_smooth(color, force=force)
-                    if out is not None:
-                        self._push(cfg, out, force=True)
-                        self.state.last_rgb = out
-                        self.state.last_rgb_int = rgb_tuple_to_int(*out)
-                        bright_rgb = out
-                    else:
-                        with self._color_lock:
-                            bright_rgb = (
-                                int(max(0, min(255, round(self._current[0])))),
-                                int(max(0, min(255, round(self._current[1])))),
-                                int(max(0, min(255, round(self._current[2])))),
+                    if segment and sample.left is not None and sample.right is not None:
+                        out_lr = self._apply_smooth_lr(
+                            sample.left, sample.right, force=force
+                        )
+                        if out_lr is not None:
+                            left, right = out_lr
+                            self._push_segment(cfg, left, right, force=True)
+                            avg = (
+                                int(round((left[0] + right[0]) / 2)),
+                                int(round((left[1] + right[1]) / 2)),
+                                int(round((left[2] + right[2]) / 2)),
                             )
+                            self.state.last_rgb = avg
+                            self.state.last_rgb_int = rgb_tuple_to_int(*avg)
+                            bright_rgb = avg
+                        else:
+                            with self._color_lock:
+                                bright_rgb = (
+                                    int(max(0, min(255, round(self._current[0])))),
+                                    int(max(0, min(255, round(self._current[1])))),
+                                    int(max(0, min(255, round(self._current[2])))),
+                                )
+                    else:
+                        out = self._apply_smooth(sample.rgb, force=force)
+                        if out is not None:
+                            self._push(cfg, out, force=True)
+                            self.state.last_rgb = out
+                            self.state.last_rgb_int = rgb_tuple_to_int(*out)
+                            bright_rgb = out
+                        else:
+                            with self._color_lock:
+                                bright_rgb = (
+                                    int(max(0, min(255, round(self._current[0])))),
+                                    int(max(0, min(255, round(self._current[1])))),
+                                    int(max(0, min(255, round(self._current[2])))),
+                                )
                 if need_bright:
                     self._sync_brightness(cfg, bright_rgb, force=force)
                 if force:
@@ -604,6 +649,35 @@ class SyncEngine:
             a = (1.0 - s) ** 2.0
         return max(0.08, min(1.0, a))
 
+    def _smooth_channel(
+        self,
+        cur: list[float],
+        sample: tuple[int, int, int],
+        *,
+        force: bool,
+        s: float,
+        a: float,
+    ) -> tuple[int, int, int] | None:
+        dist = (
+            abs(sample[0] - cur[0])
+            + abs(sample[1] - cur[1])
+            + abs(sample[2] - cur[2])
+        )
+        if not force and dist < 2.0:
+            return None
+        snap = 28.0 + s * 52.0
+        if force or s <= 0.001 or dist >= snap:
+            cur[0], cur[1], cur[2] = float(sample[0]), float(sample[1]), float(sample[2])
+            return sample
+        cur[0] = cur[0] * (1.0 - a) + sample[0] * a
+        cur[1] = cur[1] * (1.0 - a) + sample[1] * a
+        cur[2] = cur[2] * (1.0 - a) + sample[2] * a
+        return (
+            int(max(0, min(255, round(cur[0])))),
+            int(max(0, min(255, round(cur[1])))),
+            int(max(0, min(255, round(cur[2])))),
+        )
+
     def _apply_smooth(
         self, sample: tuple[int, int, int], *, force: bool
     ) -> tuple[int, int, int] | None:
@@ -614,29 +688,46 @@ class SyncEngine:
         """
         s = self._color_smooth
         with self._color_lock:
-            cur = self._current
-            dist = (
-                abs(sample[0] - cur[0])
-                + abs(sample[1] - cur[1])
-                + abs(sample[2] - cur[2])
-            )
-            if not force and dist < 2.0:
-                return None
-
-            snap = 28.0 + s * 52.0
-            if force or s <= 0.001 or dist >= snap:
-                self._current = [float(sample[0]), float(sample[1]), float(sample[2])]
-                return sample
-
             a = self._blend_alpha(s, source=self._active_source)
-            self._current[0] = cur[0] * (1.0 - a) + sample[0] * a
-            self._current[1] = cur[1] * (1.0 - a) + sample[1] * a
-            self._current[2] = cur[2] * (1.0 - a) + sample[2] * a
-            return (
-                int(max(0, min(255, round(self._current[0])))),
-                int(max(0, min(255, round(self._current[1])))),
-                int(max(0, min(255, round(self._current[2])))),
+            return self._smooth_channel(
+                self._current, sample, force=force, s=s, a=a
             )
+
+    def _apply_smooth_lr(
+        self,
+        left: tuple[int, int, int],
+        right: tuple[int, int, int],
+        *,
+        force: bool,
+    ) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
+        s = self._color_smooth
+        with self._color_lock:
+            a = self._blend_alpha(s, source=self._active_source)
+            out_l = self._smooth_channel(
+                self._current_l, left, force=force, s=s, a=a
+            )
+            out_r = self._smooth_channel(
+                self._current_r, right, force=force, s=s, a=a
+            )
+            if out_l is None and out_r is None:
+                return None
+            if out_l is None:
+                out_l = (
+                    int(max(0, min(255, round(self._current_l[0])))),
+                    int(max(0, min(255, round(self._current_l[1])))),
+                    int(max(0, min(255, round(self._current_l[2])))),
+                )
+            if out_r is None:
+                out_r = (
+                    int(max(0, min(255, round(self._current_r[0])))),
+                    int(max(0, min(255, round(self._current_r[1])))),
+                    int(max(0, min(255, round(self._current_r[2])))),
+                )
+            # 同步均值缓冲，供亮度通道复用
+            self._current[0] = (self._current_l[0] + self._current_r[0]) / 2
+            self._current[1] = (self._current_l[1] + self._current_r[1]) / 2
+            self._current[2] = (self._current_l[2] + self._current_r[2]) / 2
+            return out_l, out_r
 
     def _sync_brightness(
         self, cfg: AppConfig, rgb: tuple[int, int, int], *, force: bool
@@ -709,6 +800,8 @@ class SyncEngine:
         self._last_sync_delta = 0
         self._sync_session = True
         invalidate_window_cache()
+        if self._music_hold:
+            return
         # 同步开始前快照氛围灯，供「恢复同步前」使用
         if self._saved_bg_state is None:
             try:
@@ -739,6 +832,35 @@ class SyncEngine:
                 return
             self._udp.set_bg_rgb(rgb_int)
         self._last_sent_rgb = rgb_int
+        self._last_sent_l = None
+        self._last_sent_r = None
+
+    def _push_segment(
+        self,
+        cfg: AppConfig,
+        left: tuple[int, int, int],
+        right: tuple[int, int, int],
+        *,
+        force: bool,
+    ) -> None:
+        left_i = max(1, rgb_tuple_to_int(*left))
+        right_i = max(1, rgb_tuple_to_int(*right))
+        if (
+            not force
+            and self._last_sent_l is not None
+            and self._last_sent_r is not None
+            and self._last_sent_l == left_i
+            and self._last_sent_r == right_i
+        ):
+            return
+        self._ensure_udp(cfg, turn_on_bg=False)
+        with self._udp_lock:
+            if self._udp is None:
+                return
+            self._udp.set_segment_rgb(left_i, right_i)
+        self._last_sent_l = left_i
+        self._last_sent_r = right_i
+        self._last_sent_rgb = None
 
     def _ensure_udp(self, cfg: AppConfig, *, turn_on_bg: bool) -> None:
         with self._udp_lock:
@@ -760,6 +882,8 @@ class SyncEngine:
         self.state.active = False
 
     def _handle_exit(self) -> None:
+        if self._music_hold:
+            return
         cfg = self._get_config()
         src = self._active_source or "iina"
         mode = cfg.sync.params_for(src).on_exit

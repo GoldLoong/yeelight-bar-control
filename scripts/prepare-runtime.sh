@@ -102,7 +102,7 @@ vendor_host_python() {
   unset PYTHONHOME
 }
 
-echo "==> 本机架构 $HOST_ARCH，精简复制一份 Python（python.org 框架多为 universal2）"
+echo "==> 本机架构 ${HOST_ARCH}，精简复制一份 Python（python.org 框架多为 universal2）"
 vendor_host_python "$PAYLOAD/python"
 
 if [[ "${YEELIGHT_FETCH_STANDALONE:-0}" == "1" ]]; then

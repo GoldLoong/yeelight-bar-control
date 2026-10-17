@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld("yeelight", {
   installIinaPlugin: () => ipcRenderer.invoke("install-iina-plugin"),
   installChromeExtension: () => ipcRenderer.invoke("install-chrome-extension"),
   openScreenRecordingSettings: () => ipcRenderer.invoke("open-screen-recording-settings"),
+  ensureMusicPermission: (input, allowRequest, force) =>
+    ipcRenderer.invoke("ensure-music-permission", input, !!allowRequest, !!force),
+  refreshMusicPermissions: () => ipcRenderer.invoke("refresh-music-permissions"),
   openFullWindow: () => ipcRenderer.invoke("open-full-window"),
   hideTrayPanel: () => ipcRenderer.invoke("hide-tray-panel"),
   resizeTrayPanel: (height) => ipcRenderer.invoke("resize-tray-panel", height),

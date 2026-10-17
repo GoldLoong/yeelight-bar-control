@@ -16,9 +16,17 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 import numpy as np
+
+
+class SampleColor(NamedTuple):
+    """取色结果；左右分色时 left/right 有值，rgb 为二者均值（供亮度等复用）。"""
+
+    rgb: tuple[int, int, int]
+    left: tuple[int, int, int] | None = None
+    right: tuple[int, int, int] | None = None
 
 _window_cache = None
 _window_cache_at = 0.0
@@ -318,9 +326,7 @@ def find_media_window(
     return best
 
 
-def _mean_color_bgr(
-    arr: np.ndarray, *, vivid: bool = False
-) -> tuple[int, int, int] | None:
+def _prep_color_crop(arr: np.ndarray) -> np.ndarray | None:
     if arr.size == 0 or arr.ndim != 3:
         return None
     h, w = arr.shape[:2]
@@ -336,7 +342,10 @@ def _mean_color_bgr(
     crop = arr[y0:y1, x0:x1, :3]
     if crop.size == 0:
         crop = arr[:, :, :3]
+    return crop
 
+
+def _mean_pixels_bgr(crop: np.ndarray, *, vivid: bool = False) -> tuple[int, int, int] | None:
     pixels = crop.reshape(-1, 3).astype(np.float32)
     if pixels.shape[0] < 4:
         return None
@@ -378,6 +387,49 @@ def _mean_color_bgr(
         amount=1.75,
         lift_peak=210,
         gray_push=1.8,
+    )
+
+
+def _mean_color_bgr(
+    arr: np.ndarray, *, vivid: bool = False
+) -> tuple[int, int, int] | None:
+    crop = _prep_color_crop(arr)
+    if crop is None:
+        return None
+    return _mean_pixels_bgr(crop, vivid=vivid)
+
+
+def _mean_lr_colors_bgr(
+    arr: np.ndarray, *, vivid: bool = False
+) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
+    """同一帧裁切后按宽度对半，分别取色（灯端左右两段）。"""
+    crop = _prep_color_crop(arr)
+    if crop is None:
+        return None
+    h, w = crop.shape[:2]
+    if w < 4:
+        c = _mean_pixels_bgr(crop, vivid=vivid)
+        return (c, c) if c else None
+    mid = w // 2
+    left = _mean_pixels_bgr(crop[:, :mid, :], vivid=vivid)
+    right = _mean_pixels_bgr(crop[:, mid:, :], vivid=vivid)
+    if left is None and right is None:
+        return None
+    if left is None:
+        left = right
+    if right is None:
+        right = left
+    assert left is not None and right is not None
+    return left, right
+
+
+def _avg_rgb(
+    a: tuple[int, int, int], b: tuple[int, int, int]
+) -> tuple[int, int, int]:
+    return (
+        int(round((a[0] + b[0]) / 2)),
+        int(round((a[1] + b[1]) / 2)),
+        int(round((a[2] + b[2]) / 2)),
     )
 
 
@@ -433,9 +485,24 @@ def _grab_mss(mon: dict[str, int]) -> np.ndarray:
         return np.asarray(shot)
 
 
+def _screen_recording_granted() -> bool | None:
+    try:
+        from Quartz import CGPreflightScreenCaptureAccess
+    except Exception:
+        return None
+    try:
+        return bool(CGPreflightScreenCaptureAccess())
+    except Exception:
+        return None
+
+
 def _grab(mon: dict[str, int]) -> np.ndarray:
     """优先 ScreenCaptureKit；不可用或连续失败时回退 mss。"""
     global _last_backend, _sck_fail_streak
+    # 未授权时不要调用截屏接口，否则会反复弹出系统授权框。
+    if _screen_recording_granted() is False:
+        _sck_fail_streak = _SCK_COOLDOWN_FAILS
+        raise RuntimeError("screen recording not granted")
     pref = _capture_backend_pref()
 
     use_sck = pref == "sck" or (
@@ -457,8 +524,8 @@ def _grab(mon: dict[str, int]) -> np.ndarray:
 
     arr = _grab_mss(mon)
     _last_backend = "mss"
-    # mss 成功一段时间后允许再试 SCK
-    if _sck_fail_streak >= _SCK_COOLDOWN_FAILS:
+    # 已经有录屏权限后才恢复尝试 ScreenCaptureKit，避免未授权时反复弹窗。
+    if _sck_fail_streak >= _SCK_COOLDOWN_FAILS and _screen_recording_granted() is True:
         _sck_fail_streak = max(0, _sck_fail_streak - 1)
     return arr
 
@@ -606,15 +673,66 @@ def sample_region_color(
     capture_target: str | None = None,
     user_rect: dict[str, Any] | None = None,
     prefer_titles: Sequence[str] | None = None,
-) -> tuple[int, int, int]:
+    split_lr: bool = False,
+) -> SampleColor:
     global _last_color, _last_meta, _capture_fail_streak, _last_capture_ms
     _ = top_ratio
     region = region if region in ("window", "top", "full") else "window"
     media_source = (media_source or "iina").lower()
     t_all = time.perf_counter()
 
+    def _fallback() -> SampleColor:
+        if split_lr:
+            return SampleColor(_last_color, _last_color, _last_color)
+        return SampleColor(_last_color)
+
+    def _finalize(
+        arr: np.ndarray | None,
+        *,
+        vivid: bool,
+        meta: dict[str, object],
+    ) -> SampleColor:
+        global _last_color, _last_meta, _capture_fail_streak, _last_capture_ms
+        _last_capture_ms = (time.perf_counter() - t_all) * 1000.0
+        meta = {
+            **meta,
+            "split_lr": split_lr,
+            "capture_ms": round(_last_capture_ms, 1),
+            "backend": _last_backend,
+        }
+        if arr is None:
+            _capture_fail_streak += 1
+            meta["fail_streak"] = _capture_fail_streak
+            _last_meta = meta
+            return _fallback()
+        if split_lr:
+            pair = _mean_lr_colors_bgr(arr, vivid=vivid)
+            if pair is None:
+                _capture_fail_streak += 1
+                meta["fail_streak"] = _capture_fail_streak
+                _last_meta = meta
+                return _fallback()
+            left, right = pair
+            avg = _avg_rgb(left, right)
+            _capture_fail_streak = 0
+            _last_color = avg
+            meta["fail_streak"] = 0
+            _last_meta = meta
+            return SampleColor(avg, left, right)
+        color = _mean_color_bgr(arr, vivid=vivid)
+        if color is None:
+            _capture_fail_streak += 1
+            meta["fail_streak"] = _capture_fail_streak
+            _last_meta = meta
+            return _fallback()
+        _capture_fail_streak = 0
+        _last_color = color
+        meta["fail_streak"] = 0
+        _last_meta = meta
+        return SampleColor(color)
+
     if not _capture_lock.acquire(blocking=False):
-        return _last_color
+        return _fallback()
     try:
         displays = list_displays()
         disp = _pick_display(displays, display_id)
@@ -659,43 +777,37 @@ def sample_region_color(
                     degrade = "fallback_display"
 
             if mon is None:
-                _capture_fail_streak += 1
-                _last_meta = {
-                    "source": "none",
+                return _finalize(
+                    None,
+                    vivid=False,
+                    meta={
+                        "source": "none",
+                        "display_id": display_id,
+                        "region": region,
+                        "media_source": "screen",
+                        "capture_target": target,
+                        "degrade": degrade,
+                    },
+                )
+
+            arr = _grab(mon)
+            return _finalize(
+                arr,
+                vivid=False,
+                meta={
+                    "source": source,
                     "display_id": display_id,
                     "region": region,
+                    "rect": dict(mon),
+                    "has_window": win is not None,
                     "media_source": "screen",
                     "capture_target": target,
                     "degrade": degrade,
-                    "fail_streak": _capture_fail_streak,
-                }
-                return _last_color
-
-            arr = _grab(mon)
-            color = _mean_color_bgr(arr, vivid=False)
-            if color is None:
-                _capture_fail_streak += 1
-            else:
-                _capture_fail_streak = 0
-                _last_color = color
-            _last_capture_ms = (time.perf_counter() - t_all) * 1000.0
-            _last_meta = {
-                "source": source,
-                "display_id": display_id,
-                "region": region,
-                "rect": dict(mon),
-                "has_window": win is not None,
-                "media_source": "screen",
-                "capture_target": target,
-                "degrade": degrade,
-                "window_owner": win.owner if win else None,
-                "window_title": win.title if win else None,
-                "vivid": False,
-                "fail_streak": _capture_fail_streak,
-                "capture_ms": round(_last_capture_ms, 1),
-                "backend": _last_backend,
-            }
-            return _last_color if color is None else color
+                    "window_owner": win.owner if win else None,
+                    "window_title": win.title if win else None,
+                    "vivid": False,
+                },
+            )
 
         win = find_media_window(
             media_source,
@@ -721,34 +833,33 @@ def sample_region_color(
             source = f"display:{region}"
 
         if mon is None:
-            _last_meta = {
-                "source": "none",
-                "display_id": display_id,
-                "region": region,
-                "media_source": media_source,
-            }
-            return _last_color
+            return _finalize(
+                None,
+                vivid=(media_source == "browser"),
+                meta={
+                    "source": "none",
+                    "display_id": display_id,
+                    "region": region,
+                    "media_source": media_source,
+                },
+            )
 
         arr = _grab(mon)
-        color = _mean_color_bgr(arr, vivid=(media_source == "browser"))
-        _last_capture_ms = (time.perf_counter() - t_all) * 1000.0
-        _last_meta = {
-            "source": source,
-            "display_id": display_id,
-            "region": region,
-            "rect": dict(mon),
-            "has_window": win is not None,
-            "media_source": media_source,
-            "window_owner": win.owner if win else None,
-            "window_title": win.title if win else None,
-            "vivid": media_source == "browser",
-            "capture_ms": round(_last_capture_ms, 1),
-            "backend": _last_backend,
-        }
-        if color is None:
-            return _last_color
-        _last_color = color
-        return color
+        return _finalize(
+            arr,
+            vivid=(media_source == "browser"),
+            meta={
+                "source": source,
+                "display_id": display_id,
+                "region": region,
+                "rect": dict(mon),
+                "has_window": win is not None,
+                "media_source": media_source,
+                "window_owner": win.owner if win else None,
+                "window_title": win.title if win else None,
+                "vivid": media_source == "browser",
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         _capture_fail_streak += 1
         _last_capture_ms = (time.perf_counter() - t_all) * 1000.0
@@ -758,10 +869,11 @@ def sample_region_color(
             "display_id": display_id,
             "region": region,
             "media_source": media_source,
+            "split_lr": split_lr,
             "fail_streak": _capture_fail_streak,
             "capture_ms": round(_last_capture_ms, 1),
         }
-        return _last_color
+        return _fallback()
     finally:
         _capture_lock.release()
 

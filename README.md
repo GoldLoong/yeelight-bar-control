@@ -132,7 +132,7 @@ IINA 同步：
 ./scripts/build-app.sh
 ```
 
-产物在 `app/dist/mac/`。默认打当前机器的架构。Universal 包：`YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`。第一次打开时的系统拦截，见上面的「主应用」。
+产物在 `app/dist/v<版本>/`，不会覆盖上一版目录。默认打当前机器的架构。Universal 包：`YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`。第一次打开时的系统拦截，见上面的「主应用」。
 
 ### 仓库里有什么
 
@@ -145,7 +145,7 @@ IINA 同步：
 | `scripts/` | 启动、打包、安装插件 |
 | `docs/` | 设计笔记：屏幕取色、浏览器跟色、独立 App |
 
-音乐律动、多灯编组、场景商店、自动更新和上架公证，都不在这个仓库里。
+氛围灯可以跟电脑播放或麦克风做音乐跃动。多灯编组、场景商店、自动更新和上架公证，仍不在这个仓库里。
 
 ### 许可
 
@@ -276,7 +276,7 @@ Build a double-clickable menu-bar app:
 ./scripts/build-app.sh
 ```
 
-The result is under `app/dist/mac/`. The default build matches this machine. For a universal build: `YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`. The first-launch system warning is covered under Main app above.
+The result is under `app/dist/v<version>/`, and a new build does not replace the previous folder. The default build matches this machine. For a universal build: `YEELIGHT_UNIVERSAL=1 ./scripts/build-app.sh`. The first-launch system warning is covered under Main app above.
 
 ### What is in the repo
 
@@ -289,7 +289,7 @@ The result is under `app/dist/mac/`. The default build matches this machine. For
 | `scripts/` | Start, package, install the plugin |
 | `docs/` | Design notes: screen sampling, browser sync, the standalone app |
 
-Music-reactive modes, lamp groups, a scene store, auto-update, and notarized distribution are not here.
+The ambient light can follow music from computer playback or the microphone. Lamp groups, a scene store, auto-update, and notarized distribution are still not here.
 
 ### License
 

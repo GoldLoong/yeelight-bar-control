@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from server.config import load_config, update_config
+from server.music import MusicEngine
 from server.sync import (
     SyncEngine,
     get_browser_status,
@@ -25,6 +27,7 @@ from server.yeelight.client import QuotaExceeded
 _client_lock = threading.Lock()
 _client: YeelightClient | None = None
 _engine: SyncEngine | None = None
+_music: MusicEngine | None = None
 _state_cache: dict[str, Any] | None = None
 _state_cache_at: float = 0.0
 _STATE_TTL_IDLE = 5.0
@@ -47,6 +50,23 @@ def get_engine() -> SyncEngine:
     if _engine is None:
         _engine = SyncEngine(client_factory=get_client, get_config=load_config)
     return _engine
+
+
+def get_music() -> MusicEngine:
+    global _music
+    if _music is None:
+        engine = get_engine()
+        _music = MusicEngine(
+            client_factory=get_client,
+            get_config=load_config,
+            sync_hold=engine.set_music_hold,
+            picture_active=engine.picture_active,
+        )
+    return _music
+
+
+def _music_on() -> bool:
+    return load_config().drive_mode == "music"
 
 
 def _remember_state(partial: dict[str, Any], client: YeelightClient) -> dict[str, Any]:
@@ -86,7 +106,13 @@ async def lifespan(_app: FastAPI):
     engine = get_engine()
     if load_config().sync.enabled:
         engine.start()
+    if load_config().drive_mode == "music":
+        try:
+            get_music().start()
+        except Exception:
+            pass
     yield
+    get_music().stop(restore=False)
     engine.stop(apply_exit=False)
     with _client_lock:
         if _client is not None:
@@ -208,7 +234,7 @@ def _normalize_sync_patch(sync: dict[str, Any]) -> dict[str, Any]:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     # api_rev：Electron 用来识别是否需替换旧进程（嵌套 sync.iina/browser 等）
-    return {"ok": True, "service": "yeelight-bar", "api_rev": 4}
+    return {"ok": True, "service": "yeelight-bar", "api_rev": 5}
 
 
 def _screen_recording_granted() -> bool:
@@ -223,7 +249,20 @@ def _screen_recording_granted() -> bool:
 @app.get("/api/permissions/screen")
 def api_screen_permission() -> dict[str, Any]:
     granted = _screen_recording_granted()
-    return {"ok": True, "granted": granted}
+    return {
+        "ok": True,
+        "granted": granted,
+        "parent": os.environ.get("YEELIGHT_SCREEN_ACCESS") or "",
+    }
+
+
+@app.get("/api/permissions/music")
+def api_music_permissions() -> dict[str, Any]:
+    """给 Electron 用的权威权限视图：以系统预检为准，并回写权限文件。"""
+    from server.music.capture import live_permission_snapshot
+
+    # live_permission_snapshot 内部已按 preflight 纠正/清理 sticky
+    return {"ok": True, **live_permission_snapshot()}
 
 
 @app.post("/api/permissions/screen/request")
@@ -360,6 +399,8 @@ def api_power(body: PowerBody) -> dict[str, Any]:
                 client,
             )
         else:
+            if _music_on():
+                raise HTTPException(status_code=409, detail="音乐跃动中不能开关氛围灯")
             client.set_bg_power(body.on)
             state = _remember_state({"bg_power": "on" if body.on else "off"}, client)
         return {"ok": True, "state": state}
@@ -371,6 +412,20 @@ def api_power(body: PowerBody) -> dict[str, Any]:
 def api_bright(body: BrightBody) -> dict[str, Any]:
     client = get_client()
     try:
+        if body.target == "bg" and _music_on():
+            update_config({"music": {"bright": body.bright}})
+            get_music().refresh()
+            state = _remember_state(
+                {"bg_bright": body.bright, "bg_power": "on"},
+                client,
+            )
+            return {
+                "ok": True,
+                "state": state,
+                "base": body.bright,
+                "applied": body.bright,
+                "music": True,
+            }
         # 手动调光 = 写入基础亮度；若该路正在亮度同步，则最终=基础+当前同步增量
         patch: dict[str, Any] = {"sync": {}}
         if body.target == "main":
@@ -478,6 +533,8 @@ def api_ct(body: CtBody) -> dict[str, Any]:
 
 @app.post("/api/bg/rgb")
 def api_bg_rgb(body: RgbBody) -> dict[str, Any]:
+    if _music_on():
+        raise HTTPException(status_code=409, detail="音乐跃动中不能改氛围灯颜色")
     client = get_client()
     try:
         # 静态色用 scene 一条指令（自动开灯并停旧流）
@@ -502,6 +559,8 @@ def api_bg_rgb(body: RgbBody) -> dict[str, Any]:
 
 @app.post("/api/bg/fx")
 def api_bg_fx(body: AmbientFxBody) -> dict[str, Any]:
+    if _music_on():
+        raise HTTPException(status_code=409, detail="音乐跃动中不能改氛围灯效果")
     client = get_client()
     cfg = load_config()
     amb = cfg.ambient.model_dump()
@@ -574,39 +633,43 @@ def api_apply_mode(mode_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="unknown mode")
     m = cfg.modes[mode_id]
     client = get_client()
+    music_on = cfg.drive_mode == "music"
     try:
-        # 主灯：开=scene 一条；关=power 一条
+        # 主灯：开=scene 一条；关=power 一条。音乐跃动时不改氛围灯。
         if m.main_on:
             client.set_main_ct_scene(m.ct, m.bright)
         else:
             client.set_main_power(False)
-        if m.bg_on:
-            client.apply_ambient_fx(
-                m.bg_fx,
-                bright=m.bg_bright,
-                speed_ms=m.bg_speed_ms,
-                hex_color=m.bg_hex,
-                colors=m.bg_colors,
-                direction=m.bg_direction,
+        if not music_on:
+            if m.bg_on:
+                client.apply_ambient_fx(
+                    m.bg_fx,
+                    bright=m.bg_bright,
+                    speed_ms=m.bg_speed_ms,
+                    hex_color=m.bg_hex,
+                    colors=m.bg_colors,
+                    direction=m.bg_direction,
+                )
+            else:
+                client.set_bg_power(False)
+            update_config(
+                {
+                    "ambient": {
+                        "fx": m.bg_fx,
+                        "bright": m.bg_bright,
+                        "speed_ms": m.bg_speed_ms,
+                        "hex": m.bg_hex,
+                        "colors": m.bg_colors,
+                        "direction": m.bg_direction,
+                    },
+                    "sync": {
+                        "base_main_bright": m.bright,
+                        "base_ambient_bright": m.bg_bright,
+                    },
+                }
             )
         else:
-            client.set_bg_power(False)
-        update_config(
-            {
-                "ambient": {
-                    "fx": m.bg_fx,
-                    "bright": m.bg_bright,
-                    "speed_ms": m.bg_speed_ms,
-                    "hex": m.bg_hex,
-                    "colors": m.bg_colors,
-                    "direction": m.bg_direction,
-                },
-                "sync": {
-                    "base_main_bright": m.bright,
-                    "base_ambient_bright": m.bg_bright,
-                },
-            }
-        )
+            update_config({"sync": {"base_main_bright": m.bright}})
         try:
             bg_rgb = int(str(m.bg_hex).lstrip("#"), 16)
         except ValueError:
@@ -616,12 +679,17 @@ def api_apply_mode(mode_id: str) -> dict[str, Any]:
             "main_power": "on" if m.main_on else "off",
             "bright": m.bright,
             "ct": m.ct,
-            "bg_power": "on" if m.bg_on else "off",
-            "bg_bright": m.bg_bright,
-            "bg_rgb_hex": m.bg_hex,
         }
-        if bg_rgb is not None:
-            partial["bg_rgb"] = bg_rgb
+        if not music_on:
+            partial.update(
+                {
+                    "bg_power": "on" if m.bg_on else "off",
+                    "bg_bright": m.bg_bright,
+                    "bg_rgb_hex": m.bg_hex,
+                }
+            )
+            if bg_rgb is not None:
+                partial["bg_rgb"] = bg_rgb
         state = _remember_state(partial, client)
         return {"ok": True, "mode": m.model_dump(), "state": state}
     except Exception as exc:  # noqa: BLE001
@@ -728,6 +796,63 @@ def api_sync_enable(enabled: bool = Query(True)) -> dict[str, Any]:
     cfg = update_config({"sync": {"enabled": enabled}})
     get_engine().refresh_from_config()
     return {"ok": True, "sync": cfg.sync.model_dump(), "status": get_engine().status_dict()}
+
+
+class DriveBody(BaseModel):
+    mode: Literal["picture", "music"]
+
+
+class MusicPatchBody(BaseModel):
+    input: Literal["system", "mic"] | None = None
+    styles: list[Literal["beat", "loudness", "spectrum"]] | None = None
+    palette: Literal["builtin", "ambient"] | None = None
+    bright: int | None = Field(default=None, ge=1, le=100)
+
+
+@app.get("/api/music")
+def api_music() -> dict[str, Any]:
+    cfg = load_config()
+    return {
+        "drive_mode": cfg.drive_mode,
+        "music": cfg.music.model_dump(),
+        "status": get_music().status(),
+    }
+
+
+@app.patch("/api/music")
+def api_music_patch(body: MusicPatchBody) -> dict[str, Any]:
+    patch = body.model_dump(exclude_none=True)
+    if not patch:
+        cfg = load_config()
+    else:
+        cfg = update_config({"music": patch})
+    get_music().refresh()
+    return {
+        "ok": True,
+        "drive_mode": cfg.drive_mode,
+        "music": cfg.music.model_dump(),
+        "status": get_music().status(),
+    }
+
+
+@app.post("/api/drive")
+def api_drive(body: DriveBody) -> dict[str, Any]:
+    cfg = update_config({"drive_mode": body.mode})
+    music = get_music()
+    try:
+        if body.mode == "music":
+            music.start()
+        else:
+            music.stop()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    cfg = load_config()
+    return {
+        "ok": True,
+        "drive_mode": cfg.drive_mode,
+        "music": cfg.music.model_dump(),
+        "status": music.status(),
+    }
 
 
 def create_app() -> FastAPI:

@@ -76,6 +76,21 @@ class UdpStreamSession:
             }
         )
 
+    def set_segment_rgb(self, left_rgb: int, right_rgb: int) -> None:
+        """氛围灯左右两段分色（会覆盖整条 bg_set_rgb 状态）。"""
+        if not self.active:
+            raise RuntimeError("udp session not active")
+        left = max(1, min(0xFFFFFF, int(left_rgb)))
+        right = max(1, min(0xFFFFFF, int(right_rgb)))
+        self._send(
+            {
+                "id": self._alloc_id(),
+                "method": "set_segment_rgb",
+                "params": [left, right],
+                "token": self._token,
+            }
+        )
+
     def set_bright(self, bright: int) -> None:
         """主灯亮度（UDP，不占 TCP 配额）。"""
         if not self.active:

@@ -1,6 +1,6 @@
 {
   "name": "yeelight-bar-control",
-  "version": "0.2.0",
+  "version": "0.9.0",
   "description": "Yeelight 显示器挂灯（菜单栏 + 独立窗口）",
   "main": "main.js",
   "author": "GoldLoong",
@@ -55,7 +55,9 @@
       "extendInfo": {
         "LSUIElement": true,
         "NSHighResolutionCapable": true,
-        "NSScreenCaptureUsageDescription": "用于画面同步时对窗口或屏幕取色。"
+        "NSScreenCaptureUsageDescription": "用于画面同步时对窗口或屏幕取色，以及音乐跃动时收听电脑正在播放的声音。",
+        "NSAudioCaptureUsageDescription": "音乐跃动在听电脑播放时，需要录制系统音频。",
+        "NSMicrophoneUsageDescription": "音乐跃动选择麦克风时，用来跟随房间里的声音。"
       },
       "target": [
         {

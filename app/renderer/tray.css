@@ -158,11 +158,33 @@ body {
   background: var(--tray-fill-hover);
 }
 
-.tray-mode.active {
+.tray-seg.tray-drive {
+  grid-template-columns: 1fr 1fr;
+}
+
+.tray-drive button {
+  appearance: none;
+  border: none;
+  margin: 0;
+  padding: 6px 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--tray-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: default;
+}
+
+.tray-drive button.active {
   background: var(--tray-fill-active);
   color: var(--tray-fill-active-text);
-  font-weight: 500;
+  font-weight: 600;
   box-shadow: var(--tray-fill-active-shadow);
+}
+
+.tray-app.drive-music #traySwatches {
+  opacity: 0.35;
+  pointer-events: none;
 }
 
 .tray-row {
