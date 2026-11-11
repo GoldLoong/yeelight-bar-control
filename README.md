@@ -5,6 +5,8 @@
 
 这是一个**非官方**项目，与易来（Yeelight）及其关联公司无关。Yeelight 是其权利人的商标。灯具协议按局域网控制文档在本地使用，本仓库不提供云账号、不上传画面。
 
+**隐私：** 本应用在本地运行，灯光控制与取色均在本机完成，不会上传或上报任何信息。
+
 [English](#the-light-above-the-monitor) 在下方。
 
 ---
@@ -49,13 +51,13 @@
 
 ### 安装
 
-文件在 [Releases](https://github.com/GoldLoong/yeelight-bar-control/releases) 的 **0.9.0**。主应用里已经带上 IINA 插件、Chrome 扩展和 Safari 工程，也可以下载单独的压缩包。
+主应用在 [Releases](https://github.com/GoldLoong/yeelight-bar-control/releases) 的 **0.9.1**。应用内已带上 IINA 插件、Chrome 扩展和 Safari 工程。单独的插件压缩包本期未改，仍可从 **0.9.0** 下载。
 
 #### 主应用
 
-1. 下载 `YeelightBar-0.9.0-mac.zip`，解压。
+1. 下载 `YeelightBar-0.9.1-mac.zip`，解压。
 2. 把 **Yeelight 显示器挂灯** 拖进「应用程序」。
-3. 第一次双击时，系统会说：Apple 无法验证「Yeelight 显示器挂灯」是否包含可能危害 Mac 安全或泄漏隐私的恶意软件。这是因为这份应用没有经过 Apple 公证。它只在你的电脑上控制局域网里的灯，不会把画面上传到网上。
+3. 第一次双击时，系统会说：Apple 无法验证「Yeelight 显示器挂灯」是否包含可能危害 Mac 安全或泄漏隐私的恶意软件。这是因为这份应用没有经过 Apple 公证。本应用在本地运行，灯光控制与取色均在本机完成，不会上传或上报任何信息。
 4. 在提示里点 **完成**。不要点「移到废纸篓」。
 5. 打开 **系统设置 → 隐私与安全性**，拉到页面下方。
 6. 点 **仍要打开**，再点 **打开**。系统若要求输入开机密码，输入后确认。
@@ -161,6 +163,8 @@ I wanted a different path. While a local film plays on the Mac, the lamp follows
 
 It runs only on this Mac and talks to the lamp over the local network. One menu-bar icon connects local films, online video, and the colors on screen to the ambient light.
 
+**Privacy:** This app runs locally. Lamp control and color sampling stay on your Mac. Nothing is uploaded or reported.
+
 Color is pickier than a power switch. The lamp's TCP channel only accepts a few dozen commands a minute. Pushing a new color that often stalls on the quota, and dragging the color temperature stops tracking. Switches, modes, and ambient effects still go over TCP, with a token bucket on the client. Picture sync, and color temperature or main brightness while the lamp is already on, go over UDP. A pause keeps the last color and keeps that UDP session, so the sliders still work.
 
 Three sources can feed the picture. Only one of them drives the lamp at a time:
@@ -193,13 +197,13 @@ The `config.json` in this repository is not committed.
 
 ### Install
 
-The files are on the **0.9.0** [release](https://github.com/GoldLoong/yeelight-bar-control/releases). The main app already includes the IINA plugin, the Chrome extension, and the Safari project. Each is also attached on its own.
+The main app is on the **0.9.1** [release](https://github.com/GoldLoong/yeelight-bar-control/releases). The app already includes the IINA plugin, the Chrome extension, and the Safari project. Separate plugin archives are unchanged this round; download them from **0.9.0** if you need them.
 
 #### Main app
 
-1. Download `YeelightBar-0.9.0-mac.zip` and unzip it.
+1. Download `YeelightBar-0.9.1-mac.zip` and unzip it.
 2. Move **Yeelight 显示器挂灯** into Applications.
-3. The first double-click says Apple cannot verify whether Yeelight 显示器挂灯 contains malware that may harm your Mac or compromise your privacy. The app is not notarized by Apple. It controls the lamp on your local network and does not upload the picture.
+3. The first double-click says Apple cannot verify whether Yeelight 显示器挂灯 contains malware that may harm your Mac or compromise your privacy. The app is not notarized by Apple. It runs locally: lamp control and color sampling stay on your Mac, and nothing is uploaded or reported.
 4. Click **Done** in the alert. Leave the app where it is.
 5. Open **System Settings → Privacy & Security** and scroll to the bottom.
 6. Click **Open Anyway**, then **Open**. Enter your login password if macOS asks.
