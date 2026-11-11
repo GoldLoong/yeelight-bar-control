@@ -56,6 +56,9 @@ class YeelightClient:
     def quota_blocked(self) -> bool:
         return time.monotonic() < self._quota_blocked_until
 
+    def quota_remain_s(self) -> int:
+        return max(0, int(self._quota_blocked_until - time.monotonic()))
+
     def _refill_tokens(self) -> None:
         now = time.monotonic()
         elapsed = max(0.0, now - self._last_refill_at)
@@ -95,19 +98,13 @@ class YeelightClient:
             data = (json.dumps(payload, separators=(",", ":")) + "\r\n").encode("utf-8")
             try:
                 self._sock.sendall(data)
-                raw = self._readline()
+                resp = self._read_response(req_id)
             except OSError as exc:
                 self.close()
                 self.last_error = str(exc)
                 raise
             finally:
                 self._last_cmd_at = time.monotonic()
-
-            try:
-                resp = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                self.last_error = f"invalid json: {raw!r}"
-                raise RuntimeError(self.last_error) from exc
 
             if "error" in resp:
                 err = resp["error"]
@@ -136,6 +133,30 @@ class YeelightClient:
             if len(buf) > 65536:
                 raise RuntimeError("response too large")
         return buf.decode("utf-8", errors="replace").strip()
+
+    def _read_response(self, req_id: int) -> dict[str, Any]:
+        """跳过灯主动推送的 props 等通知，直到拿到本请求的 result/error。"""
+        deadline = time.monotonic() + max(1.0, float(self.timeout))
+        while time.monotonic() < deadline:
+            raw = self._readline()
+            if not raw:
+                continue
+            try:
+                resp = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                self.last_error = f"invalid json: {raw!r}"
+                raise RuntimeError(self.last_error) from exc
+            if not isinstance(resp, dict):
+                continue
+            # 异步属性推送：{"method":"props",...}，无 id
+            if resp.get("method") == "props":
+                continue
+            if "id" in resp and resp.get("id") != req_id:
+                continue
+            if "result" in resp or "error" in resp:
+                return resp
+            # 其它噪音继续读
+        raise TimeoutError(f"waiting response id={req_id}")
 
     def get_prop(self, props: list[str]) -> list[Any]:
         resp = self.command("get_prop", props)
@@ -243,39 +264,22 @@ class YeelightClient:
         hex_color: str = "#2A5BFF",
         colors: list[str] | None = None,
         direction: str = "out",
+        udp_port: int = 55444,
     ) -> None:
-        """应用氛围灯效果：static / breath / cycle / flow（尽量 1 条 TCP）。"""
-        from server.yeelight.effects import (
-            build_breath_flow,
-            build_cycle_flow,
-            build_flow_flow,
-            hex_to_rgb_int,
-            normalize_colors,
+        """应用氛围灯效果：static/breath/cycle 走 CF；flow 走双色 set_segment_rgb。"""
+        from server.yeelight.ambient_fx import get_ambient_fx
+
+        get_ambient_fx().apply(
+            self,
+            fx,
+            bright=bright,
+            speed_ms=speed_ms,
+            hex_color=hex_color,
+            colors=colors,
+            direction=direction,
+            host=self.host,
+            udp_port=udp_port,
         )
-
-        bright = max(1, min(100, int(bright)))
-        speed_ms = max(400, min(12000, int(speed_ms)))
-        rgb = hex_to_rgb_int(hex_color)
-
-        if fx == "static" or not fx:
-            self.set_bg_color_scene(rgb, bright)
-            return
-
-        if fx == "breath":
-            expr = build_breath_flow(rgb=rgb, bright=bright, speed_ms=speed_ms)
-        elif fx == "cycle":
-            cols = normalize_colors(colors, hex_color)
-            expr = build_cycle_flow(
-                colors=cols,
-                bright=bright,
-                speed_ms=speed_ms,
-                reverse=direction in ("rl", "in"),
-            )
-        else:  # flow / 燃彩
-            dir_ = direction if direction in ("lr", "rl", "in", "out") else "out"
-            expr = build_flow_flow(bright=bright, speed_ms=speed_ms, direction=dir_)  # type: ignore[arg-type]
-
-        self.set_bg_cf_scene(0, 1, expr)
 
     def apply_exit_mode(
         self,

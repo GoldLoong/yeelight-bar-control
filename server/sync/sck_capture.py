@@ -1,8 +1,10 @@
 """
-ScreenCaptureKit 区域截屏（macOS 12.3+ / 优先 14+ SCScreenshotManager）。
+ScreenCaptureKit 区域截屏（macOS 12.3+ / SCScreenshotManager）。
 
 输出与 mss.grab 对齐的 BGRA uint8 ndarray，供 capture._mean_color_bgr 复用。
-失败时由上层回退 mss。
+
+注意：此 API 适合偶发截图。高频屏幕同步请用 mss（见 capture._grab）；
+在 PyObjC 下连续 captureImageInRect 会堆积 IOSurface。
 """
 
 from __future__ import annotations
@@ -42,6 +44,17 @@ def is_available() -> bool:
     return bool(_available)
 
 
+def _cf_release(obj: Any) -> None:
+    if obj is None:
+        return
+    try:
+        from CoreFoundation import CFRelease  # type: ignore
+
+        CFRelease(obj)
+    except Exception:
+        pass
+
+
 def _cgimage_to_bgra(img: Any) -> np.ndarray | None:
     import Quartz  # type: ignore
 
@@ -75,7 +88,10 @@ def _cgimage_to_bgra(img: Any) -> np.ndarray | None:
     cf = Quartz.CGDataProviderCopyData(prov)
     if cf is None:
         return None
-    raw = bytes(cf)
+    try:
+        raw = bytes(cf)
+    finally:
+        _cf_release(cf)
     if bpr == w * 4:
         return np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 4).copy()
     row = np.frombuffer(raw, dtype=np.uint8).reshape(h, bpr)
@@ -90,6 +106,7 @@ def grab_region(mon: dict[str, int], *, timeout: float = 1.0) -> np.ndarray:
 
     import Quartz  # type: ignore
     import ScreenCaptureKit as sck  # type: ignore
+    from Foundation import NSAutoreleasePool  # type: ignore
 
     left = int(mon["left"])
     top = int(mon["top"])
@@ -101,9 +118,27 @@ def grab_region(mon: dict[str, int], *, timeout: float = 1.0) -> np.ndarray:
     done = threading.Event()
 
     def _cb(image, error) -> None:  # noqa: ANN001
-        box["image"] = image
-        box["error"] = error
-        done.set()
+        # 回调常在 GCD 队列：必须在回调线程立刻拷像素并 drain，
+        # 不能把 CGImage/IOSurface 带回等待线程（否则 region 数按 fps 涨）。
+        pool = NSAutoreleasePool.alloc().init()
+        try:
+            if error is not None:
+                box["error"] = error
+                return
+            if image is None:
+                box["error"] = "empty_image"
+                return
+            arr = _cgimage_to_bgra(image)
+            if arr is None:
+                box["error"] = "convert_failed"
+                return
+            box["arr"] = arr
+        except Exception as exc:  # noqa: BLE001
+            box["error"] = str(exc)
+        finally:
+            _cf_release(image)
+            del pool
+            done.set()
 
     t0 = time.perf_counter()
     with _lock:
@@ -115,20 +150,14 @@ def grab_region(mon: dict[str, int], *, timeout: float = 1.0) -> np.ndarray:
             raise TimeoutError("ScreenCaptureKit capture timeout")
 
     err = box.get("error")
-    img = box.get("image")
+    arr = box.pop("arr", None)
+    box.clear()
+    _last_ms = (time.perf_counter() - t0) * 1000.0
     if err is not None:
         _last_error = str(err)
-        _last_ms = (time.perf_counter() - t0) * 1000.0
         raise RuntimeError(_last_error)
-    if img is None:
-        _last_error = "empty_image"
-        _last_ms = (time.perf_counter() - t0) * 1000.0
-        raise RuntimeError(_last_error)
-
-    arr = _cgimage_to_bgra(img)
-    _last_ms = (time.perf_counter() - t0) * 1000.0
     if arr is None:
-        _last_error = "convert_failed"
+        _last_error = "empty_image"
         raise RuntimeError(_last_error)
     _last_error = ""
     return arr

@@ -13,13 +13,13 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { spawn, execFile } = require("child_process");
+const { spawn, execFile, execFileSync, spawnSync } = require("child_process");
 const http = require("http");
 
 const API = "http://127.0.0.1:8787";
 const BUNDLE_ID = "com.yeelightbar.control";
 const PRODUCT = "Yeelight 显示器挂灯";
-const NEED_REV = 4;
+const NEED_REV = 5;
 
 app.setName(PRODUCT);
 app.setPath("userData", path.join(app.getPath("appData"), BUNDLE_ID));
@@ -44,6 +44,83 @@ function resourcesRoot() {
 
 function configDir() {
   return path.join(app.getPath("appData"), BUNDLE_ID);
+}
+
+function appBundlePath() {
+  if (!isPackaged()) return null;
+  try {
+    return path.resolve(process.resourcesPath, "..", "..");
+  } catch (_) {
+    return null;
+  }
+}
+
+function readAppCdHash() {
+  const appPath = appBundlePath();
+  if (!appPath || !fs.existsSync(appPath)) return "";
+  try {
+    const r = spawnSync("codesign", ["-dv", "--verbose=4", appPath], {
+      encoding: "utf8",
+      timeout: 8000,
+    });
+    const text = `${r.stdout || ""}\n${r.stderr || ""}`;
+    const m = text.match(/CDHash=([0-9a-fA-F]+)/);
+    return m ? m[1].toLowerCase() : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function cdHashPath() {
+  return path.join(configDir(), "last-cdhash.txt");
+}
+
+/**
+ * 重签后旧 TCC 绑上一版 CDHash，列表里勾着却取色失败。
+ * 检测到 CDHash 变化时：reset ScreenCapture + 清 sticky 授权文件。
+ */
+function clearStaleScreenCaptureTccIfResigned() {
+  const hash = readAppCdHash();
+  if (!hash) return { changed: false, hash: "" };
+  let prev = "";
+  try {
+    prev = fs.readFileSync(cdHashPath(), "utf8").trim().toLowerCase();
+  } catch (_) {}
+  try {
+    fs.mkdirSync(configDir(), { recursive: true });
+    fs.writeFileSync(cdHashPath(), `${hash}\n`, "utf8");
+  } catch (_) {}
+  if (!prev || prev === hash) return { changed: false, hash, prev };
+  try {
+    execFileSync("tccutil", ["reset", "ScreenCapture", BUNDLE_ID], {
+      timeout: 8000,
+      stdio: "ignore",
+    });
+  } catch (_) {}
+  screenProbeOnce = false;
+  settingsOpenedScreen = false;
+  writeMusicPermissions({
+    invalidateScreen: true,
+    screen: "denied",
+    screenValidated: false,
+    preflight: false,
+    source: "cdhash-reset",
+    screenProbeOnce: false,
+    settingsOpenedScreen: false,
+  });
+  console.log(`[tcc] CDHash changed ${prev.slice(0, 8)}… → ${hash.slice(0, 8)}…; ScreenCapture reset`);
+  return { changed: true, hash, prev };
+}
+
+/** 热更 server 落点：Application Support，避免改 .app 破坏签名/录屏权限 */
+function runtimeRoot() {
+  return path.join(configDir(), "runtime");
+}
+
+function serverRoot() {
+  const hot = path.join(runtimeRoot(), "server", "main.py");
+  if (isPackaged() && fs.existsSync(hot)) return runtimeRoot();
+  return resourcesRoot();
 }
 
 function pythonBin() {
@@ -110,18 +187,26 @@ function writeMusicPermissions(extra = {}) {
   const prev = readMusicPermissionsFile();
   const electronScreen = mediaStatus("screen");
   const electronMic = mediaStatus("microphone");
-  // 录屏授权只认：Electron granted，或本次由 CGPreflight 确认。
-  const preflightOk = extra.preflight === true || extra.source === "preflight";
+  // 录屏：Electron granted / 本次预检 / 已由预检验证过的 sticky。
+  // 注意：更新后 Electron 常误报 denied，绝不能用它覆盖真实的 preflight 授权。
+  // 重签 / CDHash 变化时必须作废 sticky，否则会「文件写着 granted、实际取色失败」。
+  const invalidateScreen =
+    extra.invalidateScreen === true ||
+    extra.source === "cdhash-reset" ||
+    extra.source === "resign-reset";
+  const preflightOk =
+    !invalidateScreen && (extra.preflight === true || extra.source === "preflight");
+  const stickyPreflight =
+    !invalidateScreen &&
+    prev.screen === "granted" &&
+    !!prev.screenValidated &&
+    (prev.source === "preflight" || prev.screenValidated);
   let screen = "";
-  if (electronScreen === "granted" || preflightOk) screen = "granted";
+  if (invalidateScreen && extra.screen != null) screen = String(extra.screen);
+  else if (electronScreen === "granted" || preflightOk || stickyPreflight) screen = "granted";
   else if (extra.screen != null) screen = String(extra.screen);
   else if (electronScreen) screen = electronScreen;
-  else {
-    screen =
-      prev.screen === "granted" && prev.screenValidated && prev.source === "preflight"
-        ? "granted"
-        : electronScreen || prev.screen || "";
-  }
+  else screen = prev.screen || "";
 
   let microphone = electronMic || "";
   if (extra.microphone != null) microphone = String(extra.microphone);
@@ -129,7 +214,8 @@ function writeMusicPermissions(extra = {}) {
   else if (prev.micValidated && prev.microphone === "granted") microphone = "granted";
 
   const screenValidated =
-    screen === "granted" && (electronScreen === "granted" || preflightOk || prev.source === "preflight");
+    screen === "granted" &&
+    (electronScreen === "granted" || preflightOk || stickyPreflight || prev.source === "preflight");
   const micValidated =
     microphone === "granted" &&
     (extra.micValidated === true ||
@@ -148,7 +234,9 @@ function writeMusicPermissions(extra = {}) {
     request: extra.request || prev.request || "",
     source: preflightOk
       ? "preflight"
-      : extra.source || (electronScreen === "granted" ? "electron" : prev.source || ""),
+      : stickyPreflight
+        ? "preflight"
+        : extra.source || (electronScreen === "granted" ? "electron" : prev.source || ""),
     screenProbeOnce: pickFlag(extra, "screenProbeOnce", screenProbeOnce, prev),
     settingsOpenedScreen: pickFlag(extra, "settingsOpenedScreen", settingsOpenedScreen, prev),
     settingsOpenedMic: pickFlag(extra, "settingsOpenedMic", settingsOpenedMic, prev),
@@ -161,27 +249,6 @@ function writeMusicPermissions(extra = {}) {
     fs.mkdirSync(configDir(), { recursive: true });
     fs.writeFileSync(musicPermissionsPath(), JSON.stringify(payload), "utf8");
   } catch (_) {}
-  // #region agent log
-  fetch("http://127.0.0.1:7799/ingest/7bf1365e-5871-4c08-866c-f5f2d726fc79", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d219fd" },
-    body: JSON.stringify({
-      sessionId: "d219fd",
-      hypothesisId: "P1",
-      location: "main.js:writeMusicPermissions",
-      message: "wrote music permissions",
-      data: {
-        screen: payload.screen,
-        electronScreen: payload.electronScreen,
-        screenValidated: payload.screenValidated,
-        source: payload.source,
-        preflightOk,
-        permissionCheckVersion: payload.permissionCheckVersion,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   return payload;
 }
 
@@ -239,28 +306,6 @@ async function probeScreenCaptureAccess({ force = false } = {}) {
   const server = await fetchServerMusicPermissions();
   const after = mediaStatus("screen");
   const ok = after === "granted" || server?.preflight === true;
-  // #region agent log
-  fetch("http://127.0.0.1:7799/ingest/7bf1365e-5871-4c08-866c-f5f2d726fc79", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d219fd" },
-    body: JSON.stringify({
-      sessionId: "d219fd",
-      hypothesisId: "TCC1",
-      location: "main.js:probeScreenCaptureAccess",
-      message: "screen probe",
-      data: {
-        force,
-        probed,
-        before,
-        after,
-        preflight: server?.preflight,
-        ok,
-        probeError: probeError || undefined,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   if (ok) {
     writeMusicPermissions({
       screen: "granted",
@@ -345,20 +390,6 @@ async function ensureMusicPermission(input, opts = {}) {
   // —— 屏幕录制 / 系统声音 ——
   const electronScreen = mediaStatus("screen");
   const preflight = server?.preflight === true;
-  // #region agent log
-  fetch("http://127.0.0.1:7799/ingest/7bf1365e-5871-4c08-866c-f5f2d726fc79", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d219fd" },
-    body: JSON.stringify({
-      sessionId: "d219fd",
-      hypothesisId: "TCC1",
-      location: "main.js:ensureMusicPermission",
-      message: "screen ensure enter",
-      data: { electronScreen, preflight, probeOnce: screenProbeOnce, allowRequest, force },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
 
   if (!force && (preflight || electronScreen === "granted")) {
     const perms = writeMusicPermissions({
@@ -407,26 +438,6 @@ async function ensureMusicPermission(input, opts = {}) {
       screenProbeOnce: true,
     });
   }
-  // #region agent log
-  fetch("http://127.0.0.1:7799/ingest/7bf1365e-5871-4c08-866c-f5f2d726fc79", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d219fd" },
-    body: JSON.stringify({
-      sessionId: "d219fd",
-      hypothesisId: "TCC1",
-      location: "main.js:ensureMusicPermission",
-      message: "screen ensure unresolved after probe",
-      data: {
-        electronScreen: mediaStatus("screen"),
-        openedSettings: settingsOpenedScreen,
-        probeOnce: screenProbeOnce,
-        force,
-        probed: probe.probed,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   return { ok: false, input: kind, needsPermission: true, ...perms };
 }
 
@@ -438,21 +449,17 @@ async function runVersionFirstLaunchPermissionCheck(cfg) {
     screenProbeOnce = !!prev.screenProbeOnce;
     settingsOpenedScreen = !!prev.settingsOpenedScreen;
     settingsOpenedMic = !!prev.settingsOpenedMic;
-    writeMusicPermissions();
-    // #region agent log
-    fetch("http://127.0.0.1:7799/ingest/7bf1365e-5871-4c08-866c-f5f2d726fc79", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d219fd" },
-      body: JSON.stringify({
-        sessionId: "d219fd",
-        hypothesisId: "V1",
-        location: "main.js:runVersionFirstLaunchPermissionCheck",
-        message: "skip — same version already checked",
-        data: { ver },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    const server = await fetchServerMusicPermissions();
+    if (server?.preflight === true) {
+      writeMusicPermissions({
+        screen: "granted",
+        source: "preflight",
+        preflight: true,
+        screenValidated: true,
+      });
+    } else {
+      writeMusicPermissions();
+    }
     return { ran: false, version: ver };
   }
 
@@ -465,21 +472,6 @@ async function runVersionFirstLaunchPermissionCheck(cfg) {
     settingsOpenedMic: false,
     permissionCheckVersion: "",
   });
-
-  // #region agent log
-  fetch("http://127.0.0.1:7799/ingest/7bf1365e-5871-4c08-866c-f5f2d726fc79", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d219fd" },
-    body: JSON.stringify({
-      sessionId: "d219fd",
-      hypothesisId: "TCC1",
-      location: "main.js:runVersionFirstLaunchPermissionCheck",
-      message: "new version first launch — force probe once",
-      data: { ver, prev: prev.permissionCheckVersion || "" },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
 
   // 新版本必须 force：未签名更新后旧 TCC 条目失效，且状态常误报 denied，不探测就进不了列表
   let screenResult = null;
@@ -496,17 +488,26 @@ async function runVersionFirstLaunchPermissionCheck(cfg) {
 }
 
 function pythonEnv() {
-  const root = resourcesRoot();
+  const res = resourcesRoot();
+  const srv = serverRoot();
   const perms = writeMusicPermissions();
+  // runtime 优先，Resources 垫底（python 解释器/示例配置仍在包内）
+  const pyPath = [srv, res, process.env.PYTHONPATH || ""].filter(Boolean);
+  const uniq = [...new Set(pyPath)];
+  const example =
+    fs.existsSync(path.join(srv, "config.example.json"))
+      ? path.join(srv, "config.example.json")
+      : path.join(res, "config.example.json");
   const env = {
     ...process.env,
     PYTHONUNBUFFERED: "1",
-    PYTHONPATH: [root, process.env.PYTHONPATH || ""].filter(Boolean).join(":"),
+    PYTHONPATH: uniq.join(":"),
     YEELIGHT_CONFIG_DIR: configDir(),
-    YEELIGHT_EXAMPLE_CONFIG: path.join(root, "config.example.json"),
-    YEELIGHT_LEGACY_CONFIG: isPackaged() ? "" : path.join(root, "config.json"),
+    YEELIGHT_EXAMPLE_CONFIG: example,
+    YEELIGHT_LEGACY_CONFIG: isPackaged() ? "" : path.join(res, "config.json"),
     YEELIGHT_SCREEN_ACCESS: perms.screen || "",
     YEELIGHT_MIC_ACCESS: perms.microphone || "",
+    YEELIGHT_SERVER_ROOT: srv,
   };
   const home = pythonHome();
   if (home) env.PYTHONHOME = home;
@@ -593,8 +594,10 @@ function startPython() {
   if (pyProc) return;
   const python = pythonBin();
   const env = pythonEnv();
+  const cwd = serverRoot();
+  console.log(`[py] cwd=${cwd} python=${python}`);
   pyProc = spawn(python, ["-m", "server.main"], {
-    cwd: resourcesRoot(),
+    cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -646,9 +649,9 @@ function createWindow() {
   }
   mainWindow = new BrowserWindow({
     width: 400,
-    height: 760,
+    height: 620,
     minWidth: 360,
-    minHeight: 640,
+    minHeight: 560,
     title: PRODUCT,
     backgroundColor: "#000000",
     show: false,
@@ -1015,7 +1018,18 @@ ipcMain.handle("open-screen-recording-settings", async () => {
 ipcMain.handle("ensure-music-permission", async (_evt, input, allowRequest, force) =>
   ensureMusicPermission(input, { allowRequest: !!allowRequest, force: !!force })
 );
-ipcMain.handle("refresh-music-permissions", async () => writeMusicPermissions());
+ipcMain.handle("refresh-music-permissions", async () => {
+  const server = await fetchServerMusicPermissions();
+  if (server?.preflight === true) {
+    return writeMusicPermissions({
+      screen: "granted",
+      source: "preflight",
+      preflight: true,
+      screenValidated: true,
+    });
+  }
+  return writeMusicPermissions();
+});
 
 ipcMain.handle("open-full-window", async () => {
   hideTrayPanel();
@@ -1166,6 +1180,8 @@ if (!gotLock) {
   app.on("second-instance", () => createWindow());
   app.whenReady().then(async () => {
     applyAccessoryPolicy();
+    // 必须在拉起 Python / 取色前处理：重签后清掉失效 TCC
+    const tcc = clearStaleScreenCaptureTccIfResigned();
     await ensureApi();
     await createTray();
     createTrayWindow();
@@ -1179,8 +1195,18 @@ if (!gotLock) {
       } else if (cfg.data && cfg.data.onboarding && cfg.data.onboarding.complete === false) {
         showMain = true;
       }
-      // 每个新版本首次启动检查/申请一次权限；同版本不再自动弹。
-      await runVersionFirstLaunchPermissionCheck(cfg.data || {});
+      if (tcc.changed) {
+        // CDHash 变了：强制重新申请屏幕录制，并清取色失败计数
+        screenProbeOnce = false;
+        settingsOpenedScreen = false;
+        await ensureMusicPermission("system", { allowRequest: true, force: true });
+        try {
+          await api("/api/sync/capture/reset", { method: "POST", silent: true, timeout: 3000 });
+        } catch (_) {}
+      } else {
+        // 每个新版本首次启动检查/申请一次权限；同版本不再自动弹。
+        await runVersionFirstLaunchPermissionCheck(cfg.data || {});
+      }
     } catch (_) {}
     if (showMain) createWindow();
   });

@@ -1,6 +1,6 @@
 {
   "name": "yeelight-bar-control",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Yeelight 显示器挂灯（菜单栏 + 独立窗口）",
   "main": "main.js",
   "author": "GoldLoong",

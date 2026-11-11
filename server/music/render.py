@@ -1,6 +1,6 @@
 """把音色和起伏收成一帧氛围灯颜色和亮度。
 
-颜色跟着曲子的冷暖走，小变化大约一秒内跟上，换段大约半秒。
+颜色跟着曲子的冷暖走；跟手档小变化约 0.3s、换段约 0.15–0.2s。
 节拍只在设定亮度里面轻轻亮一下，不再每拍跳一格颜色。
 """
 
@@ -11,16 +11,16 @@ from dataclasses import dataclass
 
 from server.music.analyze import Levels
 
-# 内置色按冷暖排：暗、厚在前，亮、薄在后。不走彩虹循环。
+# 曲风轴：厚/低音暖色 → 人声品红 → 电子冷色。停点拉开，避免糊成一团紫。
 MOOD_STOPS: tuple[int, ...] = (
-    0xFF5A1F,
-    0xFF7A00,
-    0xFF9F0A,
-    0xFF375F,
-    0xE040FB,
-    0x7C6CFF,
-    0x40A9FF,
-    0x64D2FF,
+    0xB01030,  # 深绯红：trap / 重低音
+    0xFF3B00,  # 焰橙：摇滚 / drop
+    0xFF9A1F,  # 琥珀：Funk / 迪斯科
+    0xFF2D6A,  # 热粉：流行
+    0xC026FF,  # 电紫：R&B / synth
+    0x4F5BFF,  # 靛蓝：电子
+    0x00B7FF,  # 青电：Future bass
+    0x2DFFC0,  # 薄荷：轻电子 / 高亮
 )
 
 
@@ -69,6 +69,7 @@ class LampRenderer:
         self.treble_s = 0.0
         self.drive_s = 0.0
         self.fast = 0.0
+        self.flip = False
 
     def reset(self) -> None:
         self.pos = 0.45
@@ -78,6 +79,7 @@ class LampRenderer:
         self.treble_s = 0.0
         self.drive_s = 0.0
         self.fast = 0.0
+        self.flip = False
 
     def step(
         self,
@@ -94,35 +96,50 @@ class LampRenderer:
         beat_on = "beat" in chosen
         loud_on = "loudness" in chosen
         spec_on = "spectrum" in chosen
+        swap_on = "beat_swap" in chosen and spec_on
         if not chosen:
             beat_on = True
 
-        target = _mood_pos(levels.centroid, levels.warmth)
+        target = _mood_pos(
+            levels.centroid,
+            levels.warmth,
+            levels.bass,
+            levels.mid,
+            levels.treble,
+        )
         gap = abs(target - self.pos)
         if levels.retint:
             self.fast = 0.7
+            self.pos = target
         if self.fast > 0:
             self.fast = max(0.0, self.fast - dt)
-            tau = 0.16
-        elif gap > 0.12:
-            tau = 0.28
+            tau = 0.12
+        elif gap > 0.14:
+            tau = 0.22
         else:
-            tau = 0.55
+            # 同曲风内稳住，别跟着每拍微抖
+            tau = 0.70
         self.pos = _follow(self.pos, target, dt, tau)
-        self.bass_s = _follow(self.bass_s, levels.bass, dt, 0.14)
-        self.treble_s = _follow(self.treble_s, levels.treble, dt, 0.14)
-        self.drive_s = _follow(self.drive_s, levels.drive, dt, 0.4)
+        self.bass_s = _follow(self.bass_s, levels.bass, dt, 0.10)
+        self.treble_s = _follow(self.treble_s, levels.treble, dt, 0.10)
+        self.drive_s = _follow(self.drive_s, levels.drive, dt, 0.22)
 
         if levels.loud >= self.env:
-            self.env = _follow(self.env, levels.loud, dt, 0.08)
+            self.env = _follow(self.env, levels.loud, dt, 0.045)
         else:
-            self.env = _follow(self.env, levels.loud, dt, 0.48)
+            self.env = _follow(self.env, levels.loud, dt, 0.20)
 
-        if beat_on and levels.beat:
-            self.punch = 1.0
-        else:
-            release = max(0.14, min(0.42, float(levels.period) * 0.42))
+        if levels.beat:
+            if beat_on:
+                self.punch = 1.0
+            if swap_on:
+                self.flip = not self.flip
+        elif beat_on:
+            # 稍留一点闪光尾巴，鼓点才「看得见」
+            release = max(0.10, min(0.28, float(levels.period) * 0.32))
             self.punch *= math.exp(-dt / release) if release > 0 else 0.0
+        else:
+            self.punch *= math.exp(-dt / 0.14)
 
         cap = max(1, min(100, int(bright_max)))
         cols = colors or list(MOOD_STOPS)
@@ -132,7 +149,10 @@ class LampRenderer:
             builtin=builtin,
             drive=drive,
             spec_on=spec_on,
+            force_split=swap_on,
         )
+        if swap_on and segmented and self.flip:
+            left, right = right, left
         bright = self._brightness(cap, beat_on=beat_on, loud_on=loud_on, drive=drive)
         return LampFrame(bright=bright, left=left, right=right, segmented=segmented)
 
@@ -143,17 +163,28 @@ class LampRenderer:
         builtin: bool,
         drive: float,
         spec_on: bool,
+        force_split: bool = False,
     ) -> tuple[int, int, bool]:
         if spec_on:
-            left_pos = self.pos - 0.08 - 0.22 * self.bass_s
-            right_pos = self.pos + 0.08 + 0.22 * self.treble_s
+            spread = 0.12 if force_split else 0.08
+            bass_w = 0.28 if force_split else 0.22
+            treb_w = 0.28 if force_split else 0.22
+            left_pos = self.pos - spread - bass_w * self.bass_s
+            right_pos = self.pos + spread + treb_w * self.treble_s
         else:
             left_pos = right_pos = self.pos
         left = _paint(left_pos, colors, builtin, drive)
         right = _paint(right_pos, colors, builtin, drive)
-        split = spec_on and _distance(left, right) >= 28
+        split = spec_on and (force_split or _distance(left, right) >= 28)
         if not split:
             right = left
+        elif force_split and left == right:
+            # 平缓曲子两侧太接近时，强制拉开一点，换边才看得出。
+            left = _paint(max(0.0, self.pos - 0.22), colors, builtin, drive)
+            right = _paint(min(1.0, self.pos + 0.22), colors, builtin, drive)
+            if left == right:
+                right = left
+                split = False
         return left, right, split
 
     def _brightness(self, cap: int, *, beat_on: bool, loud_on: bool, drive: float) -> int:
@@ -163,19 +194,38 @@ class LampRenderer:
         else:
             level = 1.0
         if beat_on:
-            depth = 0.18 + 0.16 * drive
+            # 鼓点起伏加大，才卡得住节奏
+            depth = 0.30 + 0.22 * drive
             level *= (1.0 - depth) + depth * max(0.0, min(1.0, self.punch))
         return max(1, min(cap, int(round(cap * max(0.0, min(1.0, level))))))
 
 
-def _mood_pos(centroid: float, warmth: float) -> float:
-    pos = float(centroid) - (float(warmth) - 0.5) * 0.45
+def _mood_pos(
+    centroid: float,
+    warmth: float,
+    bass: float,
+    mid: float,
+    treble: float,
+) -> float:
+    """能量带 → 曲风色位：低音暖、人声品红、高频冷。"""
+    total = max(1e-8, float(bass) + float(mid) + float(treble))
+    b = float(bass) / total
+    m = float(mid) / total
+    tr = float(treble) / total
+    # 主轴：带能量（比单纯频谱重心更分得清曲风）
+    band = 0.08 * b + 0.42 * m + 0.90 * tr
+    # 低音再往暖端拽；高亮往冷端拽
+    band -= (float(warmth) - 0.5) * 0.28
+    band += (tr - b) * 0.12
+    # 频谱重心轻混合，避免只吃到人声中频
+    pos = 0.68 * band + 0.32 * float(centroid)
     return max(0.0, min(1.0, pos))
 
 
 def _paint(pos: float, colors: list[int], builtin: bool, drive: float) -> int:
     pos = max(0.0, min(1.0, pos))
-    keep = 0.55 + 0.45 * max(0.0, min(1.0, drive))
+    # 饱和度抬高，曲风色才分得清
+    keep = 0.72 + 0.28 * max(0.0, min(1.0, drive))
     if builtin or len(colors) < 2:
         mood = _gradient(MOOD_STOPS, pos)
         if not builtin and colors:
@@ -241,7 +291,7 @@ def _chroma(rgb: int, keep: float) -> int:
     keep = max(0.0, min(1.0, keep))
     r, g, b = _split(rgb)
     y = 0.30 * r + 0.52 * g + 0.18 * b
-    return _join(y + (r - y) * keep, y + (g - y) * keep, b + (b - y) * keep)
+    return _join(y + (r - y) * keep, y + (g - y) * keep, y + (b - y) * keep)
 
 
 def _distance(a: int, b: int) -> float:

@@ -1,5 +1,5 @@
 """
-轻量取色：Quartz 定位媒体窗口；优先 ScreenCaptureKit 抓区域，失败回退 mss。
+轻量取色：Quartz 定位媒体窗口；截屏后端可配置，默认 mss。
 
 语义（有播放窗口时优先窗口，保证换区域肉眼可感）：
 - window：窗口画面中上部
@@ -7,7 +7,10 @@
 - full：窗口画面大范围平均
 无窗口时退回所选显示器的 top / 中央区域。
 
-后端：环境变量 YEELIGHT_CAPTURE_BACKEND=auto|sck|mss（默认 auto）。
+后端（环境变量 YEELIGHT_CAPTURE_BACKEND 优先，否则 config.sync.capture_backend）：
+- auto / mss：mss。大图先收到像素预算再截，不把整窗原尺寸拷进进程
+- stream：常驻 SCStream（低延迟，实验）
+- sck：旧 SCScreenshotManager（易 IOSurface 膨胀，仅调试）
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, Sequence
 
 import numpy as np
-
 
 class SampleColor(NamedTuple):
     """取色结果；左右分色时 left/right 有值，rgb 为二者均值（供亮度等复用）。"""
@@ -35,7 +37,16 @@ _WINDOW_CACHE_TTL = 1.0
 _front_cache = None
 _front_cache_at = 0.0
 _front_cache_degrade = ""
-_FRONT_CACHE_TTL = 0.35
+_FRONT_CACHE_TTL = 0.6
+# 前台窗和媒体窗共用一份窗口列表，避免两条路径各打一次 WindowServer。
+_wininfo_cache: list | None = None
+_wininfo_cache_at = 0.0
+_WININFO_TTL = 0.75
+_wininfo_lock = threading.Lock()
+# mss 不能缩放，只能少截。一条居中的横带就够取均值，避免左右各打一次 WindowServer。
+_MSS_MAX_W = 1280
+_MSS_MAX_H = 140
+_MSS_MAX_PIXELS = 100_000
 _displays_cache: list[DisplayInfo] | None = None
 _displays_cache_at = 0.0
 _DISPLAYS_CACHE_TTL = 2.0
@@ -43,11 +54,13 @@ _last_color: tuple[int, int, int] = (36, 40, 48)
 _last_meta: dict[str, object] = {"source": "none"}
 _last_capture_ms: float = 0.0
 _last_backend: str = "none"
+_last_backend_error: str = ""
 _capture_lock = threading.Lock()
 _mss = None
 _mss_lock = threading.Lock()
 _sck_fail_streak = 0
 _SCK_COOLDOWN_FAILS = 3
+_sck_cooldown_until = 0.0
 
 _EXCLUDE = (
     "播放历史",
@@ -102,7 +115,6 @@ _SCREEN_EXCLUDE_OWNERS = (
 _prev_front: WindowRect | None = None
 _capture_fail_streak = 0
 
-
 @dataclass
 class DisplayInfo:
     id: int
@@ -111,7 +123,6 @@ class DisplayInfo:
     width: int
     height: int
     is_primary: bool = False
-
 
 @dataclass
 class WindowRect:
@@ -122,7 +133,6 @@ class WindowRect:
     title: str | None = None
     window_id: int | None = None
     owner: str | None = None
-
 
 def list_displays() -> list[DisplayInfo]:
     """缓存显示器列表，避免每帧新建 mss 会话。"""
@@ -157,23 +167,40 @@ def list_displays() -> list[DisplayInfo]:
     except Exception:
         return list(_displays_cache or [])
 
-
 def last_capture_ms() -> float:
     return float(_last_capture_ms)
-
 
 def last_capture_backend() -> str:
     return str(_last_backend)
 
+def last_capture_backend_error() -> str:
+    return str(_last_backend_error)
 
-def _capture_backend_pref() -> str:
-    raw = (os.environ.get("YEELIGHT_CAPTURE_BACKEND") or "auto").strip().lower()
-    if raw in ("sck", "screencapturekit", "screen_capture_kit"):
+def _normalize_backend(raw: str) -> str:
+    text = (raw or "auto").strip().lower()
+    if text in ("stream", "scstream", "sc_stream"):
+        return "stream"
+    if text in ("sck", "screencapturekit", "screen_capture_kit", "screenshot"):
         return "sck"
-    if raw in ("mss", "legacy"):
+    if text in ("mss", "legacy"):
         return "mss"
     return "auto"
 
+def _capture_backend_pref() -> str:
+    """环境变量优先，其次 config.sync.capture_backend；auto=mss。"""
+    env = (os.environ.get("YEELIGHT_CAPTURE_BACKEND") or "").strip()
+    if env:
+        return _normalize_backend(env)
+    try:
+        from server.config import load_config
+
+        raw = str(getattr(load_config().sync, "capture_backend", "auto") or "auto")
+        return _normalize_backend(raw)
+    except Exception:
+        return "auto"
+
+def capture_backend_pref() -> str:
+    return _capture_backend_pref()
 
 def _pick_display(
     displays: list[DisplayInfo], display_id: int | None
@@ -189,7 +216,6 @@ def _pick_display(
             return d
     return displays[0]
 
-
 def _window_on_display(win: WindowRect, disp: DisplayInfo) -> bool:
     cx = win.left + win.width / 2
     cy = win.top + win.height / 2
@@ -198,6 +224,20 @@ def _window_on_display(win: WindowRect, disp: DisplayInfo) -> bool:
         and disp.top <= cy < disp.top + disp.height
     )
 
+def _copy_on_screen_windows() -> list:
+    """短时间内复用同一次 CGWindowListCopyWindowInfo。"""
+    global _wininfo_cache, _wininfo_cache_at
+    now = time.monotonic()
+    with _wininfo_lock:
+        if _wininfo_cache is not None and now - _wininfo_cache_at < _WININFO_TTL:
+            return _wininfo_cache
+        import Quartz  # type: ignore
+
+        opts = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
+        windows = list(Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID) or [])
+        _wininfo_cache = windows
+        _wininfo_cache_at = now
+        return windows
 
 def _find_owner_windows(
     owners: Sequence[str],
@@ -208,14 +248,11 @@ def _find_owner_windows(
     min_h: int = 150,
     prefer_titles: Sequence[str] | None = None,
 ) -> WindowRect | None:
-    import Quartz  # type: ignore
-
     owner_set = {o for o in owners if o}
     if not owner_set:
         return None
 
-    opts = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
-    windows = Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID) or []
+    windows = _copy_on_screen_windows()
     candidates: list[WindowRect] = []
     for win in windows:
         owner = win.get("kCGWindowOwnerName") or ""
@@ -272,7 +309,6 @@ def _find_owner_windows(
 
     return max(pool, key=_score)
 
-
 def find_iina_window(
     *, use_cache: bool = True, display_id: int | None = None
 ) -> WindowRect | None:
@@ -282,7 +318,6 @@ def find_iina_window(
         use_cache=use_cache,
         display_id=display_id,
     )
-
 
 def find_media_window(
     media_source: str = "iina",
@@ -325,25 +360,30 @@ def find_media_window(
     _window_cache_key = cache_key
     return best
 
-
 def _prep_color_crop(arr: np.ndarray) -> np.ndarray | None:
     if arr.size == 0 or arr.ndim != 3:
         return None
     h, w = arr.shape[:2]
     if h < 2 or w < 2:
         return None
-    # 大图先降采样，均值几乎不变，CPU 明显下降
-    if h * w > 60000:
+    # mss 路径在截屏前已经按同样的外圈收过，并压进像素预算。这里再裁一圈会把取样区掏空。
+    already_budgeted = (
+        h * w <= _MSS_MAX_PIXELS + 4096
+        and w <= _MSS_MAX_W + 8
+        and h <= _MSS_MAX_H + 8
+    )
+    if not already_budgeted and h * w > 60000:
         step = 2 if h * w < 200000 else 3
         arr = arr[::step, ::step]
         h, w = arr.shape[:2]
+    if already_budgeted:
+        return arr[:, :, :3]
     y0, y1 = int(h * 0.12), max(int(h * 0.88), int(h * 0.12) + 1)
     x0, x1 = int(w * 0.10), max(int(w * 0.90), int(w * 0.10) + 1)
     crop = arr[y0:y1, x0:x1, :3]
     if crop.size == 0:
         crop = arr[:, :, :3]
     return crop
-
 
 def _mean_pixels_bgr(crop: np.ndarray, *, vivid: bool = False) -> tuple[int, int, int] | None:
     pixels = crop.reshape(-1, 3).astype(np.float32)
@@ -389,7 +429,6 @@ def _mean_pixels_bgr(crop: np.ndarray, *, vivid: bool = False) -> tuple[int, int
         gray_push=1.8,
     )
 
-
 def _mean_color_bgr(
     arr: np.ndarray, *, vivid: bool = False
 ) -> tuple[int, int, int] | None:
@@ -397,7 +436,6 @@ def _mean_color_bgr(
     if crop is None:
         return None
     return _mean_pixels_bgr(crop, vivid=vivid)
-
 
 def _mean_lr_colors_bgr(
     arr: np.ndarray, *, vivid: bool = False
@@ -422,7 +460,6 @@ def _mean_lr_colors_bgr(
     assert left is not None and right is not None
     return left, right
 
-
 def _avg_rgb(
     a: tuple[int, int, int], b: tuple[int, int, int]
 ) -> tuple[int, int, int]:
@@ -431,7 +468,6 @@ def _avg_rgb(
         int(round((a[1] + b[1]) / 2)),
         int(round((a[2] + b[2]) / 2)),
     )
-
 
 def _boost_chroma(
     r: int,
@@ -465,6 +501,48 @@ def _boost_chroma(
         int(max(0, min(255, round(b2)))),
     )
 
+def _inset_mon(mon: dict[str, int]) -> dict[str, int]:
+    """先丢掉均值阶段会裁掉的外圈，避免把这些像素从 WindowServer 拷进来。"""
+    left, top = int(mon["left"]), int(mon["top"])
+    w, h = int(mon["width"]), int(mon["height"])
+    if w < 32 or h < 32:
+        return {"left": left, "top": top, "width": max(8, w), "height": max(8, h)}
+    x0 = int(w * 0.10)
+    x1 = max(x0 + 8, int(w * 0.90))
+    y0 = int(h * 0.12)
+    y1 = max(y0 + 8, int(h * 0.88))
+    return {
+        "left": left + x0,
+        "top": top + y0,
+        "width": max(8, x1 - x0),
+        "height": max(8, y1 - y0),
+    }
+
+def _fit_mon(
+    mon: dict[str, int],
+    *,
+    max_w: int = _MSS_MAX_W,
+    max_h: int = _MSS_MAX_H,
+    max_pixels: int = _MSS_MAX_PIXELS,
+) -> dict[str, int]:
+    """收成一条居中横带。优先留住宽度，左右分色才分得开。"""
+    left, top = int(mon["left"]), int(mon["top"])
+    w, h = max(8, int(mon["width"])), max(8, int(mon["height"]))
+    if w > max_w:
+        left += (w - max_w) // 2
+        w = max_w
+    if h > max_h:
+        top += (h - max_h) // 2
+        h = max_h
+    if w * h > max_pixels:
+        nh = max(24, min(h, max_pixels // w))
+        top += (h - nh) // 2
+        h = nh
+    return {"left": left, "top": top, "width": w, "height": h}
+
+def _budget_sample_rects(mon: dict[str, int], *, split: bool) -> list[dict[str, int]]:
+    _ = split
+    return [_fit_mon(_inset_mon(mon))]
 
 def _grab_mss(mon: dict[str, int]) -> np.ndarray:
     global _mss
@@ -484,6 +562,20 @@ def _grab_mss(mon: dict[str, int]) -> np.ndarray:
             shot = _mss.grab(mon)
         return np.asarray(shot)
 
+def _grab_mss_budgeted(mon: dict[str, int], *, split_lr: bool) -> np.ndarray:
+    rects = _budget_sample_rects(mon, split=split_lr)
+    parts = [_grab_mss(rect) for rect in rects]
+    if len(parts) == 1:
+        return parts[0]
+    height = min(int(part.shape[0]) for part in parts)
+    trimmed = []
+    for part in parts:
+        if int(part.shape[0]) == height:
+            trimmed.append(part)
+            continue
+        y0 = (int(part.shape[0]) - height) // 2
+        trimmed.append(part[y0 : y0 + height])
+    return np.concatenate(trimmed, axis=1)
 
 def _screen_recording_granted() -> bool | None:
     try:
@@ -495,46 +587,84 @@ def _screen_recording_granted() -> bool | None:
     except Exception:
         return None
 
-
-def _grab(mon: dict[str, int]) -> np.ndarray:
-    """优先 ScreenCaptureKit；不可用或连续失败时回退 mss。"""
-    global _last_backend, _sck_fail_streak
+def _grab(mon: dict[str, int], *, split_lr: bool = False) -> np.ndarray:
+    """截屏：默认 mss；stream=SCStream；sck=旧截图 API。失败时可回退 mss。"""
+    global _last_backend, _last_backend_error, _sck_fail_streak, _sck_cooldown_until
     # 未授权时不要调用截屏接口，否则会反复弹出系统授权框。
     if _screen_recording_granted() is False:
         _sck_fail_streak = _SCK_COOLDOWN_FAILS
         raise RuntimeError("screen recording not granted")
     pref = _capture_backend_pref()
-
-    use_sck = pref == "sck" or (
-        pref == "auto" and _sck_fail_streak < _SCK_COOLDOWN_FAILS
+    strict = (os.environ.get("YEELIGHT_CAPTURE_STRICT") or "").strip() in (
+        "1",
+        "true",
+        "yes",
     )
-    if use_sck and pref != "mss":
+
+    now = time.monotonic()
+    allow_alt = now >= _sck_cooldown_until and _sck_fail_streak < _SCK_COOLDOWN_FAILS
+
+    if pref == "stream" and allow_alt:
+        try:
+            from server.sync.scstream_capture import grab_region, is_available
+
+            if is_available():
+                arr = grab_region(mon)
+                _sck_fail_streak = 0
+                _last_backend = "stream"
+                _last_backend_error = ""
+                return arr
+            raise RuntimeError("SCStream unavailable")
+        except Exception as exc:
+            _sck_fail_streak += 1
+            _last_backend_error = f"stream:{exc}"
+            if _sck_fail_streak >= _SCK_COOLDOWN_FAILS:
+                _sck_cooldown_until = now + 8.0
+            if strict:
+                raise
+            # 非严格：回退 mss；冷却期内不再重试 stream
+
+    if pref == "sck" and allow_alt:
         try:
             from server.sync.sck_capture import grab_region, is_available
 
-            if pref == "sck" or is_available():
+            if is_available():
                 arr = grab_region(mon)
                 _sck_fail_streak = 0
                 _last_backend = "sck"
+                _last_backend_error = ""
                 return arr
-        except Exception:
+            raise RuntimeError("SCScreenshot unavailable")
+        except Exception as exc:
             _sck_fail_streak += 1
-            if pref == "sck":
+            _last_backend_error = f"sck:{exc}"
+            if _sck_fail_streak >= _SCK_COOLDOWN_FAILS:
+                _sck_cooldown_until = now + 8.0
+            if strict:
                 raise
 
-    arr = _grab_mss(mon)
+    arr = _grab_mss_budgeted(mon, split_lr=split_lr)
     _last_backend = "mss"
-    # 已经有录屏权限后才恢复尝试 ScreenCaptureKit，避免未授权时反复弹窗。
-    if _sck_fail_streak >= _SCK_COOLDOWN_FAILS and _screen_recording_granted() is True:
-        _sck_fail_streak = max(0, _sck_fail_streak - 1)
     return arr
-
 
 def _is_near_fullscreen(win: WindowRect, disp: DisplayInfo | None) -> bool:
     if disp is None:
         return win.height >= 900 and win.width >= 1200
     return win.width >= disp.width * 0.92 and win.height >= disp.height * 0.88
 
+def _is_browser_owner(owner: str | None, extra: Sequence[str] | None = None) -> bool:
+    """中文系统上 Safari 的进程名是「Safari浏览器」，用包含关系匹配。"""
+    text = (owner or "").strip().lower()
+    if not text:
+        return False
+    names = list(DEFAULT_BROWSER_OWNERS)
+    if extra:
+        names.extend(str(n) for n in extra if n)
+    for name in names:
+        n = str(name).strip().lower()
+        if n and n in text:
+            return True
+    return False
 
 def _sample_window(
     win: WindowRect,
@@ -612,7 +742,6 @@ def _sample_window(
         "height": max(8, int(cap_h)),
     }
 
-
 def _sample_display(disp: DisplayInfo, region: str) -> dict[str, int]:
     """显示器条带采样（前台窗找不到时的降级；非整屏主路径）。"""
     max_w = min(disp.width, 1280)
@@ -638,7 +767,6 @@ def _sample_display(disp: DisplayInfo, region: str) -> dict[str, int]:
         "height": max(8, int(cap_h)),
     }
 
-
 def _sample_display_whole(disp: DisplayInfo) -> dict[str, int]:
     """取色目标=整屏：采所选显示器绝大部分（避开菜单栏），不是小条带。"""
     menu = max(24, int(disp.height * 0.03))
@@ -651,16 +779,13 @@ def _sample_display_whole(disp: DisplayInfo) -> dict[str, int]:
         "height": max(8, int(disp.height - menu - bottom)),
     }
 
-
 def reset_last_color(rgb: tuple[int, int, int] | None = None) -> None:
     global _last_color, _last_meta
     _last_color = rgb or (36, 40, 48)
     _last_meta = {"source": "reset"}
 
-
 def last_sample_meta() -> dict[str, object]:
     return dict(_last_meta)
-
 
 def sample_region_color(
     display_id: int | None = None,
@@ -700,6 +825,9 @@ def sample_region_color(
             "capture_ms": round(_last_capture_ms, 1),
             "backend": _last_backend,
         }
+        if arr is not None and arr.ndim >= 2:
+            meta["grab_h"] = int(arr.shape[0])
+            meta["grab_w"] = int(arr.shape[1])
         if arr is None:
             _capture_fail_streak += 1
             meta["fail_streak"] = _capture_fail_streak
@@ -744,6 +872,7 @@ def sample_region_color(
             source = "none"
             win: WindowRect | None = None
             degrade = ""
+            browser_win = False
 
             if target == "user_rect" and user_rect:
                 try:
@@ -763,14 +892,18 @@ def sample_region_color(
             else:
                 win, degrade = find_front_window()
                 if win is not None:
+                    # 前台是浏览器小窗时，沿用浏览器源的播放器裁法，避开顶栏和右侧推荐。
+                    browser_win = _is_browser_owner(win.owner, owners)
                     mon = _sample_window(
                         win,
                         region,
                         disp=disp,
                         fullscreen_hint=fullscreen_hint,
-                        media_source="screen",
+                        media_source="browser" if browser_win else "screen",
                     )
                     source = f"window:{region}:{degrade}"
+                    if browser_win:
+                        source += ":browser"
                 elif disp is not None:
                     mon = _sample_display_whole(disp)
                     source = "display:fallback"
@@ -790,10 +923,10 @@ def sample_region_color(
                     },
                 )
 
-            arr = _grab(mon)
+            arr = _grab(mon, split_lr=split_lr)
             return _finalize(
                 arr,
-                vivid=False,
+                vivid=browser_win,
                 meta={
                     "source": source,
                     "display_id": display_id,
@@ -805,7 +938,7 @@ def sample_region_color(
                     "degrade": degrade,
                     "window_owner": win.owner if win else None,
                     "window_title": win.title if win else None,
-                    "vivid": False,
+                    "vivid": browser_win,
                 },
             )
 
@@ -844,7 +977,7 @@ def sample_region_color(
                 },
             )
 
-        arr = _grab(mon)
+        arr = _grab(mon, split_lr=split_lr)
         return _finalize(
             arr,
             vivid=(media_source == "browser"),
@@ -877,7 +1010,6 @@ def sample_region_color(
     finally:
         _capture_lock.release()
 
-
 def is_screen_locked() -> bool:
     """锁屏 / 会话锁。失败时返回 False（由采集失败兜底）。"""
     try:
@@ -894,7 +1026,6 @@ def is_screen_locked() -> bool:
         return False
     except Exception:
         return False
-
 
 def find_front_window(
     *,
@@ -917,14 +1048,11 @@ def find_front_window(
     ):
         return _front_cache, _front_cache_degrade
 
-    import Quartz  # type: ignore
-
     excl = {o.lower() for o in (exclude_owners or _SCREEN_EXCLUDE_OWNERS)}
     displays = list_displays()
     screen_area = sum(max(1, d.width * d.height) for d in displays) or 1
 
-    opts = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
-    windows = Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID) or []
+    windows = _copy_on_screen_windows()
 
     def _ok(win: WindowRect) -> bool:
         owner = (win.owner or "").lower()
@@ -962,11 +1090,13 @@ def find_front_window(
             window_id=int(win.get("kCGWindowNumber") or 0) or None,
             owner=win.get("kCGWindowOwnerName") or None,
         )
-        # 列表大致按前到后；取第一个 layer0 大窗作为「前台候选」
-        front = cand
-        break
+        # 列表按前到后。挂灯自己的窗口、Cursor 这类排除项在最前时，继续找后面的内容窗，
+        # 否则会退成整屏截图。
+        if _ok(cand):
+            front = cand
+            break
 
-    if front and _ok(front):
+    if front is not None:
         _prev_front = front
         _front_cache, _front_cache_degrade, _front_cache_at = front, "front", now
         return front, "front"
@@ -977,7 +1107,6 @@ def find_front_window(
 
     _front_cache, _front_cache_degrade, _front_cache_at = None, "fallback_display", now
     return None, "fallback_display"
-
 
 def screen_target_valid(
     *,
@@ -997,7 +1126,6 @@ def screen_target_valid(
         return _pick_display(list_displays(), display_id) is not None
     # front_window：有任意显示器即可尝试（降级整屏）
     return bool(list_displays())
-
 
 def screen_is_fullscreenish(
     *,
@@ -1022,17 +1150,24 @@ def screen_is_fullscreenish(
         return False
     return _is_near_fullscreen(win, disp)
 
-
 def invalidate_window_cache() -> None:
     global _window_cache, _window_cache_at, _window_cache_key
     global _front_cache, _front_cache_at, _front_cache_degrade
+    global _wininfo_cache, _wininfo_cache_at
     _window_cache = None
     _window_cache_at = 0.0
     _window_cache_key = None
     _front_cache = None
     _front_cache_at = 0.0
     _front_cache_degrade = ""
-
+    with _wininfo_lock:
+        _wininfo_cache = None
+        _wininfo_cache_at = 0.0
 
 def capture_fail_streak() -> int:
     return int(_capture_fail_streak)
+
+def reset_capture_fail_streak() -> None:
+    """权限恢复/改取色目标后清零，避免 ≥12 永久卡死。"""
+    global _capture_fail_streak
+    _capture_fail_streak = 0

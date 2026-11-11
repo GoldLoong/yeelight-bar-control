@@ -8,7 +8,12 @@ from .client import (
     rgb_tuple_to_int,
 )
 from .discovery import DiscoveredDevice, discover
-from .stream import UdpStreamSession, adaptive_smooth_color, smooth_color
+from .stream import (
+    UdpStreamSession,
+    adaptive_smooth_color,
+    smooth_color,
+    smooth_color_hsv,
+)
 
 __all__ = [
     "DiscoveredDevice",
@@ -21,4 +26,5 @@ __all__ = [
     "luminance_to_bright",
     "rgb_tuple_to_int",
     "smooth_color",
+    "smooth_color_hsv",
 ]

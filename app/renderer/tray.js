@@ -16,6 +16,7 @@ async function api(pathname, options = {}) {
 }
 
 function setToggle(el, on) {
+  if (!el) return;
   el.setAttribute("aria-pressed", on ? "true" : "false");
 }
 
@@ -28,10 +29,33 @@ function debounce(fn, ms) {
 }
 
 const SOURCE_LABEL = { iina: "IINA", browser: "浏览器", screen: "屏幕" };
+// 略长于服务端电源保护窗，避免锁过期后被旧快照弹回
+const POWER_LOCK_MS = 2800;
 
 let lastModeId = null;
 let modesCache = {};
 let driveMode = "picture";
+let mainPowerLockUntil = 0;
+let bgPowerLockUntil = 0;
+let syncLockUntil = 0;
+let mainPowerBusy = false;
+let bgPowerBusy = false;
+let syncBusy = false;
+/** @type {{ on: boolean, until: number } | null} */
+let mainIntent = null;
+/** @type {{ on: boolean, until: number } | null} */
+let bgIntent = null;
+
+function parsePowerOn(v) {
+  if (v == null || v === "") return null;
+  const s = String(v).toLowerCase();
+  if (s === "on") return true;
+  if (s === "off") return false;
+  return null;
+}
+
+function agentTrayLog(message, data) {
+}
 
 function hexNorm(h) {
   return String(h || "")
@@ -40,14 +64,77 @@ function hexNorm(h) {
     .replace(/^#/, "");
 }
 
+function setMainPowerUi(on, { lock = false, intent = false } = {}) {
+  setToggle($("trayMainPower"), on);
+  if (lock) {
+    mainPowerLockUntil = performance.now() + POWER_LOCK_MS;
+    bgPowerLockUntil = Math.max(bgPowerLockUntil, performance.now() + POWER_LOCK_MS);
+  }
+  if (intent) mainIntent = { on: !!on, until: performance.now() + POWER_LOCK_MS };
+}
+
+function setBgPowerUi(on, { lock = false, intent = false } = {}) {
+  setToggle($("trayBgPower"), on);
+  if (lock) {
+    bgPowerLockUntil = performance.now() + POWER_LOCK_MS;
+    mainPowerLockUntil = Math.max(mainPowerLockUntil, performance.now() + POWER_LOCK_MS);
+  }
+  if (intent) bgIntent = { on: !!on, until: performance.now() + POWER_LOCK_MS };
+}
+
+function setSyncUi(on, { lock = false } = {}) {
+  setToggle($("traySync"), on);
+  if (lock) syncLockUntil = performance.now() + POWER_LOCK_MS;
+}
+
+function applyChannelPower(kind, got) {
+  if (got === null) return;
+  const now = performance.now();
+  const intent = kind === "main" ? mainIntent : bgIntent;
+  const lockUntil = kind === "main" ? mainPowerLockUntil : bgPowerLockUntil;
+  const busy = kind === "main" ? mainPowerBusy : bgPowerBusy;
+  const el = kind === "main" ? $("trayMainPower") : $("trayBgPower");
+  if (intent && now < intent.until) {
+    if (got === intent.on) {
+      if (kind === "main") mainIntent = null;
+      else bgIntent = null;
+      setToggle(el, got);
+      agentTrayLog("intent confirmed", { kind, got });
+      return;
+    }
+    agentTrayLog("block snapback", { kind, got, want: intent.on });
+    return;
+  }
+  if (now > lockUntil && !busy) {
+    setToggle(el, got);
+  } else {
+    agentTrayLog("skip apply (locked)", {
+      kind,
+      got,
+      lockLeft: Math.round(lockUntil - now),
+      busy,
+    });
+  }
+}
+
+function applyLampStateToUi(s) {
+  if (!s || typeof s !== "object") return;
+  // 与主窗口一致：优先 main_power，再回退 power
+  const mainOn = parsePowerOn(s.main_power) ?? parsePowerOn(s.power);
+  const bgOn = parsePowerOn(s.bg_power);
+  applyChannelPower("main", mainOn);
+  applyChannelPower("bg", bgOn);
+}
+
 function matchMode(state, cfg) {
   if (lastModeId && modesCache[lastModeId]) return lastModeId;
   const bright = Number(state?.bright);
   const ct = Number(state?.ct);
   const bgBright = Number(state?.bg_bright);
   const bgHex = hexNorm(state?.bg_rgb_hex || cfg?.ambient?.hex);
-  const mainOn = String(state?.power || state?.main_power || "").toLowerCase() === "on";
-  const bgOn = String(state?.bg_power || "").toLowerCase() === "on";
+  const mainOn =
+    (parsePowerOn(state?.main_power) ?? parsePowerOn(state?.power)) === true;
+  const bgOn = parsePowerOn(state?.bg_power) === true;
   let best = null;
   let bestScore = -1;
   for (const [id, m] of Object.entries(modesCache)) {
@@ -98,11 +185,10 @@ async function refresh() {
     ]);
     modesCache = modesRes?.data?.modes || {};
     const s = (st && st.state) || {};
-    const mainOn = String(s.power || s.main_power || "").toLowerCase() === "on";
-    const bgOn = String(s.bg_power || "").toLowerCase() === "on";
-    setToggle($("trayMainPower"), mainOn);
-    setToggle($("trayBgPower"), bgOn);
-    setToggle($("traySync"), !!(cfg && cfg.sync && cfg.sync.enabled));
+    applyLampStateToUi(s);
+    if (performance.now() > syncLockUntil && !syncBusy) {
+      setSyncUi(!!(cfg && cfg.sync && cfg.sync.enabled));
+    }
     const bright = Number(s.bright ?? cfg?.sync?.iina?.base_main_bright ?? 50);
     const bgBright =
       cfg?.drive_mode === "music"
@@ -129,13 +215,6 @@ async function refresh() {
   requestAnimationFrame(fitWindow);
 }
 
-$("trayMainPower").addEventListener("click", () => {
-  const on = $("trayMainPower").getAttribute("aria-pressed") !== "true";
-  setToggle($("trayMainPower"), on);
-  lastModeId = null;
-  api("/api/power", { method: "POST", body: { target: "main", on } }).catch(() => {});
-});
-
 function setTrayDrive(mode) {
   driveMode = mode === "music" ? "music" : "picture";
   document.querySelectorAll("#trayDrive button").forEach((btn) => {
@@ -143,22 +222,106 @@ function setTrayDrive(mode) {
   });
   const root = $("trayRoot");
   if (root) root.classList.toggle("drive-music", driveMode === "music");
-  if ($("trayBgPower")) $("trayBgPower").disabled = driveMode === "music";
+  if ($("trayBgPower")) $("trayBgPower").disabled = false;
 }
 
-$("trayBgPower").addEventListener("click", () => {
-  if (driveMode === "music") return;
-  const on = $("trayBgPower").getAttribute("aria-pressed") !== "true";
-  setToggle($("trayBgPower"), on);
+$("trayMainPower").addEventListener("click", async () => {
+  if (mainPowerBusy) return;
+  const on = $("trayMainPower").getAttribute("aria-pressed") !== "true";
+  mainPowerBusy = true;
+  setMainPowerUi(on, { lock: true, intent: true });
   lastModeId = null;
-  api("/api/power", { method: "POST", body: { target: "bg", on } }).catch(() => {});
+  agentTrayLog("main power click", { on });
+  try {
+    const { status, data } = await api("/api/power", {
+      method: "POST",
+      body: { target: "main", on },
+    });
+    if (status >= 400) {
+      mainIntent = null;
+      setMainPowerUi(!on, { lock: true });
+      $("trayStatus").textContent = "开关失败";
+      agentTrayLog("main power fail", { status, on });
+      return;
+    }
+    if (data?.state) {
+      setMainPowerUi(on, { lock: true, intent: true });
+      applyLampStateToUi(data.state);
+    }
+  } catch (_) {
+    mainIntent = null;
+    setMainPowerUi(!on, { lock: true });
+    $("trayStatus").textContent = "开关失败";
+    agentTrayLog("main power error", { on });
+  } finally {
+    mainPowerBusy = false;
+  }
 });
 
-$("traySync").addEventListener("click", () => {
+$("trayBgPower").addEventListener("click", async () => {
+  if (bgPowerBusy) return;
+  const on = $("trayBgPower").getAttribute("aria-pressed") !== "true";
+  bgPowerBusy = true;
+  setBgPowerUi(on, { lock: true, intent: true });
+  lastModeId = null;
+  agentTrayLog("bg power click", { on });
+  try {
+    const { status, data } = await api("/api/power", {
+      method: "POST",
+      body: { target: "bg", on },
+    });
+    if (status >= 400) {
+      bgIntent = null;
+      setBgPowerUi(!on, { lock: true });
+      $("trayStatus").textContent = "开关失败";
+      agentTrayLog("bg power fail", { status, on });
+      return;
+    }
+    if (data?.state) {
+      setBgPowerUi(on, { lock: true, intent: true });
+      applyLampStateToUi(data.state);
+    }
+  } catch (_) {
+    bgIntent = null;
+    setBgPowerUi(!on, { lock: true });
+    $("trayStatus").textContent = "开关失败";
+    agentTrayLog("bg power error", { on });
+  } finally {
+    bgPowerBusy = false;
+  }
+});
+
+$("traySync").addEventListener("click", async () => {
+  if (syncBusy) return;
   const on = $("traySync").getAttribute("aria-pressed") !== "true";
-  setToggle($("traySync"), on);
+  syncBusy = true;
+  setSyncUi(on, { lock: true });
   $("traySyncHint").textContent = on ? "待命" : "已关闭";
-  api(`/api/sync/enable?enabled=${on}`, { method: "POST" }).catch(() => {});
+  agentTrayLog("sync click", { on });
+  try {
+    const { status, data } = await api(`/api/sync/enable?enabled=${on}`, {
+      method: "POST",
+    });
+    if (status >= 400) {
+      setSyncUi(!on, { lock: true });
+      $("traySyncHint").textContent = !on ? "待命" : "已关闭";
+      $("trayStatus").textContent = "同步开关失败";
+      agentTrayLog("sync fail", { status, on });
+      return;
+    }
+    const enabled = data?.sync?.enabled;
+    if (typeof enabled === "boolean") {
+      setSyncUi(enabled, { lock: true });
+      $("traySyncHint").textContent = enabled ? "待命" : "已关闭";
+    }
+  } catch (_) {
+    setSyncUi(!on, { lock: true });
+    $("traySyncHint").textContent = !on ? "待命" : "已关闭";
+    $("trayStatus").textContent = "同步开关失败";
+    agentTrayLog("sync error", { on });
+  } finally {
+    syncBusy = false;
+  }
 });
 
 $("trayMainBright").addEventListener(
@@ -167,6 +330,8 @@ $("trayMainBright").addEventListener(
     const bright = Number(e.target.value);
     $("trayMainBrightVal").textContent = `${bright}%`;
     lastModeId = null;
+    // 调主灯亮度会开灯；锁住开关避免 refresh 把中间态盖掉
+    setMainPowerUi(true, { lock: true, intent: true });
     api("/api/bright", { method: "POST", body: { target: "main", bright } }).catch(() => {});
   }, 80)
 );
@@ -177,6 +342,10 @@ $("trayBgBright").addEventListener(
     const bright = Number(e.target.value);
     $("trayBgBrightVal").textContent = `${bright}%`;
     lastModeId = null;
+    // 氛围已关时不把开关强行拨成开（音乐跃动 mute 场景）
+    if ($("trayBgPower")?.getAttribute("aria-pressed") === "true") {
+      setBgPowerUi(true, { lock: true, intent: true });
+    }
     api("/api/bright", { method: "POST", body: { target: "bg", bright } }).catch(() => {});
   }, 80)
 );
@@ -187,6 +356,7 @@ $("trayCt").addEventListener(
     const ct = Number(e.target.value);
     $("trayCtVal").textContent = `${ct}K`;
     lastModeId = null;
+    setMainPowerUi(true, { lock: true, intent: true });
     api("/api/ct", { method: "POST", body: { ct } }).catch(() => {});
   }, 80)
 );
@@ -213,6 +383,7 @@ document.querySelectorAll("#traySwatches button").forEach((btn) => {
   btn.addEventListener("click", () => {
     if (driveMode === "music") return;
     lastModeId = null;
+    setBgPowerUi(true, { lock: true, intent: true });
     api("/api/bg/rgb", { method: "POST", body: { hex: btn.dataset.hex } }).then(() => refresh());
   });
 });
@@ -227,8 +398,16 @@ document.addEventListener("visibilitychange", () => {
 
 window.addEventListener("resize", () => requestAnimationFrame(fitWindow));
 
+const debouncedRefresh = debounce(() => refresh(), 450);
+
 if (window.yeelight?.onStateChanged) {
-  window.yeelight.onStateChanged(() => {
+  window.yeelight.onStateChanged((payload) => {
+    if (payload?.state) {
+      applyLampStateToUi(payload.state);
+      // 有明确 state 时先对齐开关，稍后再刷滑条等，避免立刻 GET 撞上旧快照
+      debouncedRefresh();
+      return;
+    }
     refresh();
   });
 }

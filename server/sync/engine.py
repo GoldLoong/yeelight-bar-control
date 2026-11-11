@@ -8,20 +8,23 @@ from typing import Any, Callable
 
 from server.config import AppConfig, ScreenSyncSettings, _normalize_priority, load_config
 from server.sync.capture import (
+    capture_backend_pref,
     capture_fail_streak,
     invalidate_window_cache,
     is_screen_locked,
     last_capture_backend,
+    last_capture_backend_error,
     last_capture_ms,
     last_sample_meta,
     list_displays,
+    reset_capture_fail_streak,
     reset_last_color,
     sample_region_color,
     screen_is_fullscreenish,
     screen_target_valid,
 )
 from server.sync.iina import consume_seek, get_iina_status
-from server.sync.media import consume_browser_seek, get_browser_status
+from server.sync.media import MediaStatus, consume_browser_seek, get_browser_status
 from server.yeelight import (
     RateLimitedTcp,
     UdpStreamSession,
@@ -31,11 +34,13 @@ from server.yeelight import (
 )
 from server.yeelight import udp_hub
 
-# 性能：控制环低频；取色优先 ScreenCaptureKit（~30ms），mss 回退；目标 8–14Hz
+# 性能：控制环低频；默认 mss 取色；可选 stream=SCStream；目标 8–14Hz
 _CTRL_HZ = 8.0
 _SAMPLE_HZ_MAX = 14.0
 _SAMPLE_HZ_MIN = 8.0
-
+# stream 取色更跟手，同等滑条易显「跳」；额外黏一点贴近 mss 过渡感
+_STREAM_SMOOTH_BOOST = 0.16
+_STREAM_BLEND_SCALE = 0.72
 
 @dataclass
 class SyncRuntimeState:
@@ -47,7 +52,6 @@ class SyncRuntimeState:
     media: dict[str, Any] = field(default_factory=dict)
     source: str = "iina"
     error: str | None = None
-
 
 class SyncEngine:
     """
@@ -117,10 +121,44 @@ class SyncEngine:
         self._cur_bg_bright = 40.0
         self._bright_lock = threading.Lock()
         self._music_hold = False
+        self._ambient_fx_hold = False
+        # 用户手动关灯后，追色不得 UDP 写亮
+        self._user_main_off = False
+        self._user_bg_off = False
+        self._screen_fail_probe_at = 0.0
 
     def set_music_hold(self, hold: bool) -> None:
         """音乐跃动占住氛围灯时，追色不再往灯上写。"""
         self._music_hold = bool(hold)
+
+    def set_ambient_fx_hold(self, hold: bool) -> None:
+        """燃彩/呼吸等占住氛围灯时，追色不再往灯上写。"""
+        self._ambient_fx_hold = bool(hold)
+
+    def set_user_power(self, *, main_on: bool | None = None, bg_on: bool | None = None) -> None:
+        """记录用户手动开关，供写灯路径守门。"""
+        if main_on is not None:
+            self._user_main_off = not bool(main_on)
+            if main_on:
+                self._last_main_bright_sent = None
+        if bg_on is not None:
+            self._user_bg_off = not bool(bg_on)
+            if not bg_on:
+                self._bg_power_on = False
+            else:
+                self._last_bg_bright_sent = None
+                self._last_sent_rgb = None
+                self._last_sent_l = None
+                self._last_sent_r = None
+
+    def user_wants_bg_on(self) -> bool:
+        return not bool(self._user_bg_off)
+
+    def user_wants_main_on(self) -> bool:
+        return not bool(self._user_main_off)
+
+    def _lamp_held(self) -> bool:
+        return bool(self._music_hold or self._ambient_fx_hold)
 
     def picture_active(self) -> bool:
         return bool(self._playing)
@@ -160,6 +198,8 @@ class SyncEngine:
 
     def refresh_from_config(self) -> None:
         self._cfg = None
+        reset_capture_fail_streak()
+        self._screen_fail_probe_at = 0.0
         cfg = self._get_config()
         if cfg.sync.enabled:
             self.start()
@@ -211,10 +251,20 @@ class SyncEngine:
             self._screen_capture_target = "front_window"
             self._screen_user_rect = None
 
-    @staticmethod
-    def _screen_eligible(screen: ScreenSyncSettings, *, locked: bool, fail_streak: int) -> tuple[bool, str]:
-        if locked or fail_streak >= 12:
-            return False, "locked" if locked else "capture_fail"
+    def _screen_eligible(
+        self, screen: ScreenSyncSettings, *, locked: bool, fail_streak: int
+    ) -> tuple[bool, str]:
+        if locked:
+            return False, "locked"
+        cap_err = str(last_sample_meta().get("error") or "")
+        if "screen recording not granted" in cap_err.lower() or "录制" in cap_err:
+            return False, "需要屏幕录制权限"
+        # 连续失败后仍每隔约 1s 探测一次（权限刚勾上时要尽快恢复）
+        if fail_streak >= 8:
+            now = time.monotonic()
+            if now - self._screen_fail_probe_at < 1.0:
+                return False, "capture_fail"
+            self._screen_fail_probe_at = now
         flags = [str(x).lower() for x in (screen.eligibility or []) if str(x).strip()]
         if not flags:
             flags = ["target_valid"]
@@ -252,6 +302,31 @@ class SyncEngine:
         self._last_sent_l = None
         self._last_sent_r = None
 
+    def _poll_browser(
+        self,
+        *,
+        browser_on: bool,
+        browser_cfg: Any,
+        priority: list[str],
+        iina_playing: bool,
+        screen_playing: bool,
+    ) -> MediaStatus:
+        if not browser_on:
+            return MediaStatus(
+                running=False, playing=False, provider="browser", source="none"
+            )
+        pri = {name: i for i, name in enumerate(priority)}
+        rank = pri.get("browser", 99)
+        higher = (iina_playing and pri.get("iina", 99) < rank) or (
+            screen_playing and pri.get("screen", 99) < rank
+        )
+        return get_browser_status(
+            require_extension=bool(browser_cfg.require_extension),
+            match_hosts=list(browser_cfg.match_hosts or []),
+            owners=list(browser_cfg.owners or []),
+            title_fallback=not higher,
+        )
+
     def _control_loop(self) -> None:
         try:
             os.nice(12)
@@ -280,15 +355,20 @@ class SyncEngine:
             priority = _normalize_priority(sync.priority)
 
             ist = get_iina_status(sync.iina.iina_ipc_socket)
-            bst = get_browser_status(
-                require_extension=bool(browser_cfg.require_extension),
-                match_hosts=list(browser_cfg.match_hosts or []),
-                owners=list(browser_cfg.owners or []),
-            )
             locked = is_screen_locked()
             fail_n = capture_fail_streak()
             screen_ok, screen_reason = self._screen_eligible(
                 screen_cfg, locked=locked, fail_streak=fail_n
+            )
+            iina_playing = iina_on and ist.playing
+            screen_playing = screen_on and screen_ok
+            # 屏幕或 IINA 已经压过浏览器时，扩展状态仍要读，但不再为标题扫窗口。
+            bst = self._poll_browser(
+                browser_on=browser_on,
+                browser_cfg=browser_cfg,
+                priority=priority,
+                iina_playing=iina_playing,
+                screen_playing=screen_playing,
             )
 
             self.state.iina = {
@@ -335,9 +415,7 @@ class SyncEngine:
                 invalidate_window_cache()
                 self._force_snap = True
 
-            iina_playing = iina_on and ist.playing
             browser_playing = browser_on and bst.playing
-            screen_playing = screen_on and screen_ok
 
             # 锁屏：若当前/上一会话是屏幕源，走屏幕 on_exit
             if locked and screen_on:
@@ -446,27 +524,32 @@ class SyncEngine:
         except Exception:
             pass
         while not self._stop.is_set():
-            if self._music_hold or not self._playing:
+            if self._lamp_held() or not self._playing:
                 time.sleep(0.15)
                 continue
             cfg = self._config()
             media_source = self._active_source or "iina"
             params = cfg.sync.params_for(media_source)
-            need_color = params.channels.ambient_color
+            # 对应灯已关则不必截屏：写灯路径本就会丢弃，继续取色只空转并占录屏指示。
+            need_color = bool(params.channels.ambient_color) and not self._user_bg_off
             need_bright = (
-                params.channels.main_brightness or params.channels.ambient_brightness
+                (bool(params.channels.main_brightness) and not self._user_main_off)
+                or (
+                    bool(params.channels.ambient_brightness)
+                    and not self._user_bg_off
+                )
             )
             if not need_color and not need_bright:
                 time.sleep(0.2)
                 continue
 
-            s = self._color_smooth
-            # 目标频率随平滑下降；再按实际上次截屏耗时抬高间隔，避免空转抢 CPU
+            s = self._effective_color_smooth()
+            # 目标频率随平滑下降。截屏一旦变慢，间隔至少放到耗时的两倍，把 CPU 让出去。
             hz = _SAMPLE_HZ_MAX - s * (_SAMPLE_HZ_MAX - _SAMPLE_HZ_MIN)
             interval = 1.0 / max(4.0, hz)
             capt = last_capture_ms() / 1000.0
-            if capt > 0.02:
-                interval = max(interval, capt * 1.05)
+            if capt > 0.025:
+                interval = max(interval, capt * 2.0)
 
             t0 = time.monotonic()
             try:
@@ -632,6 +715,19 @@ class SyncEngine:
         a = self._blend_alpha(smooth, source=self._active_source)
         return cur * (1.0 - a) + target * a
 
+    def _stream_smooth_active(self) -> bool:
+        """偏好或实际后端为 stream 时启用额外黏性（mss 不受影响）。"""
+        return (
+            capture_backend_pref() == "stream"
+            or last_capture_backend() == "stream"
+        )
+
+    def _effective_color_smooth(self) -> float:
+        s = max(0.0, min(1.0, float(self._color_smooth)))
+        if self._stream_smooth_active():
+            s = min(1.0, s + _STREAM_SMOOTH_BOOST)
+        return s
+
     @staticmethod
     def _blend_alpha(s: float, *, source: str | None = None) -> float:
         """
@@ -686,9 +782,11 @@ class SyncEngine:
         s=0：本帧 100% 新色；s 越大越黏。
         仅在明显切镜（大距离）时直出；平滑越高，直出门槛越高。
         """
-        s = self._color_smooth
+        s = self._effective_color_smooth()
         with self._color_lock:
             a = self._blend_alpha(s, source=self._active_source)
+            if self._stream_smooth_active():
+                a = max(0.06, min(1.0, a * _STREAM_BLEND_SCALE))
             return self._smooth_channel(
                 self._current, sample, force=force, s=s, a=a
             )
@@ -700,9 +798,11 @@ class SyncEngine:
         *,
         force: bool,
     ) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
-        s = self._color_smooth
+        s = self._effective_color_smooth()
         with self._color_lock:
             a = self._blend_alpha(s, source=self._active_source)
+            if self._stream_smooth_active():
+                a = max(0.06, min(1.0, a * _STREAM_BLEND_SCALE))
             out_l = self._smooth_channel(
                 self._current_l, left, force=force, s=s, a=a
             )
@@ -761,6 +861,8 @@ class SyncEngine:
             self._send_bg_bright(out, force=force)
 
     def _send_main_bright(self, bright: int, *, force: bool) -> None:
+        if self._user_main_off:
+            return
         if not force and self._last_main_bright_sent is not None:
             if abs(bright - self._last_main_bright_sent) < 1:
                 return
@@ -776,6 +878,8 @@ class SyncEngine:
                 self.state.error = str(exc)
 
     def _send_bg_bright(self, bright: int, *, force: bool) -> None:
+        if self._user_bg_off:
+            return
         if not force and self._last_bg_bright_sent is not None:
             if abs(bright - self._last_bg_bright_sent) < 1:
                 return
@@ -800,22 +904,27 @@ class SyncEngine:
         self._last_sync_delta = 0
         self._sync_session = True
         invalidate_window_cache()
-        if self._music_hold:
+        if self._lamp_held():
             return
         # 同步开始前快照氛围灯，供「恢复同步前」使用
         if self._saved_bg_state is None:
             try:
-                snap = self._client_factory().snapshot()
-                self._saved_bg_state = {
-                    "bg_power": snap.get("bg_power"),
-                    "bg_bright": snap.get("bg_bright"),
-                    "bg_rgb": snap.get("bg_rgb"),
-                }
+                client = self._client_factory()
+                if not client.quota_blocked():
+                    snap = client.snapshot()
+                    self._saved_bg_state = {
+                        "bg_power": snap.get("bg_power"),
+                        "bg_bright": snap.get("bg_bright"),
+                        "bg_rgb": snap.get("bg_rgb"),
+                    }
             except Exception:
                 self._saved_bg_state = None
-        self._ensure_udp(cfg, turn_on_bg=True)
+        # 用户已关氛围时不得在开播时强制点亮
+        self._ensure_udp(cfg, turn_on_bg=not self._user_bg_off)
 
     def _push(self, cfg: AppConfig, rgb: tuple[int, int, int], *, force: bool) -> None:
+        if self._user_bg_off:
+            return
         rgb_int = rgb_tuple_to_int(*rgb)
         if not force and self._last_sent_rgb is not None:
             prev = self._last_sent_rgb
@@ -843,6 +952,8 @@ class SyncEngine:
         *,
         force: bool,
     ) -> None:
+        if self._user_bg_off:
+            return
         left_i = max(1, rgb_tuple_to_int(*left))
         right_i = max(1, rgb_tuple_to_int(*right))
         if (
@@ -866,7 +977,7 @@ class SyncEngine:
         with self._udp_lock:
             sess = udp_hub.get_udp(cfg.host, cfg.udp_port)
             self._udp = sess
-        if turn_on_bg and not self._bg_power_on:
+        if turn_on_bg and not self._bg_power_on and not self._user_bg_off:
             try:
                 self._tcp_gate.maybe(
                     "bg_power_on",
@@ -882,7 +993,7 @@ class SyncEngine:
         self.state.active = False
 
     def _handle_exit(self) -> None:
-        if self._music_hold:
+        if self._lamp_held():
             return
         cfg = self._get_config()
         src = self._active_source or "iina"
@@ -953,6 +1064,7 @@ class SyncEngine:
                 "screen": cfg.sync.screen.model_dump(),
             },
             "color_smooth": self._color_smooth,
+            "color_smooth_effective": self._effective_color_smooth(),
             "main_bright_smooth": self._main_bright_smooth,
             "ambient_bright_smooth": self._ambient_bright_smooth,
             "base_main_bright": self._base_main_bright,
@@ -962,5 +1074,6 @@ class SyncEngine:
             "sync_bright_delta": self._last_sync_delta,
             "capture": last_sample_meta(),
             "capture_backend": last_capture_backend(),
-            "capture_backend_pref": (os.environ.get("YEELIGHT_CAPTURE_BACKEND") or "auto"),
+            "capture_backend_pref": capture_backend_pref(),
+            "capture_backend_error": last_capture_backend_error() or None,
         }

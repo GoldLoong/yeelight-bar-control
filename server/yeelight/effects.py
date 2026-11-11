@@ -23,9 +23,10 @@ def _clamp_speed(ms: int) -> int:
 
 
 def build_breath_flow(*, rgb: int, bright: int, speed_ms: int) -> str:
-    """同一颜色亮暗呼吸（近熄灭→再亮起）。speed ≈ 一整次呼吸周期。"""
+    """同一颜色亮暗呼吸（近熄灭→再亮起）。speed_ms ≈ 一整次呼吸周期。"""
     bright = _clamp_bright(bright)
-    half = max(300, _clamp_speed(speed_ms) // 2)
+    # 固件单步约 50–10000ms；周期越短呼吸越快
+    half = max(200, min(5000, _clamp_speed(speed_ms) // 2))
     lo = 1
     hi = bright
     return f"{half},1,{rgb},{lo},{half},1,{rgb},{hi}"
@@ -38,14 +39,14 @@ def build_cycle_flow(
     speed_ms: int,
     reverse: bool = False,
 ) -> str:
-    """按色表依次循环。speed ≈ 整圈总时长。"""
+    """按色表依次循环。speed_ms ≈ 整圈总时长。"""
     bright = _clamp_bright(bright)
     cols = [int(c) & 0xFFFFFF for c in colors]
     if not cols:
         cols = [0x2A5BFF, 0xAF52DE, 0x34C759, 0xFF9500]
     if reverse:
         cols = list(reversed(cols))
-    step = max(300, _clamp_speed(speed_ms) // max(1, len(cols)))
+    step = max(200, min(4000, _clamp_speed(speed_ms) // max(1, len(cols))))
     parts: list[str] = []
     for c in cols:
         parts.extend([str(step), "1", str(c), str(bright)])
@@ -59,19 +60,15 @@ def build_flow_flow(
     direction: FlowDir = "out",
 ) -> str:
     """
-    燃彩：彩虹色流。
-    direction 影响色序/节奏（灯条无真正左右扫光时用色序近似）。
+    燃彩回退（整条 CF）：彩虹色流。
+    direction 影响色序；speed_ms 为整圈时长。
     """
     bright = _clamp_bright(bright)
     # 8 段彩虹
     hues = [0, 30, 60, 120, 180, 210, 270, 330]
     if direction in ("rl", "in"):
         hues = list(reversed(hues))
-    step = max(200, _clamp_speed(speed_ms) // len(hues))
-    if direction == "in":
-        step = max(160, int(step * 0.75))
-    if direction == "out":
-        step = max(160, int(step * 0.9))
+    step = max(120, min(2000, _clamp_speed(speed_ms) // len(hues)))
 
     parts: list[str] = []
     for h in hues:

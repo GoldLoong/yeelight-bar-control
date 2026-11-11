@@ -10,6 +10,7 @@
   },
   "sync": {
     "enabled": true,
+    "capture_backend": "auto",
     "priority": ["iina", "browser", "screen"],
     "iina": {
       "enabled": true,

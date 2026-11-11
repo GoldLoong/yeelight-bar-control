@@ -35,13 +35,14 @@ function parsePowerOn(v) {
 function setMainPowerUi(on, { lock = false } = {}) {
   setToggle($("mainPower"), on);
   $("panel-main")?.classList.toggle("is-off", !on);
-  if (lock) mainPowerLockUntil = performance.now() + 800;
+  // 与后端 POWER_BUDGET_S≈1s 对齐
+  if (lock) mainPowerLockUntil = performance.now() + 1200;
 }
 
 function setBgPowerUi(on, { lock = false } = {}) {
   setToggle($("bgPower"), on);
   $("panel-ambient")?.classList.toggle("is-off", !on);
-  if (lock) bgPowerLockUntil = performance.now() + 800;
+  if (lock) bgPowerLockUntil = performance.now() + 1200;
 }
 
 function debounce(fn, ms) {
@@ -88,7 +89,9 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (id === "ambient") drawRgbWheel();
     // 切页时强制对齐灯具真实开关/亮度，避免按钮与实态不一致
     refreshState({ force: true }).catch(() => {});
-    if (id === "sync") refreshSync().catch(() => {});
+    if (id === "sync") {
+      refreshSync().catch(() => {});
+    }
   });
 });
 
@@ -295,11 +298,15 @@ rgbCanvas.addEventListener("pointerup", () => {
   rgbDragging = false;
 });
 
-/* —— Modes —— */
+/* —— Modes（米家式：详情内嵌编辑 + 预览） —— */
 const MODE_FX_LABEL = { static: "静态", breath: "呼吸", cycle: "循环", flow: "燃彩" };
+const MODE_CT_PRESETS = [2700, 4000, 5000, 6500];
 let modesCache = {};
 let editingModeId = null;
 let draftMode = null;
+/** 模式详情内嵌编辑：'main' | 'bg' | null */
+let modeFieldEditing = null;
+let modeSelectedPresetHex = "#C0FF73";
 let ambientFx = {
   fx: "static",
   bright: 40,
@@ -313,18 +320,39 @@ let cycleEditIndex = 0;
 async function loadModes() {
   const { data } = await api("/api/modes");
   modesCache = data?.modes || {};
+  renderModeCards();
+}
+
+function modeCardSubtext(m) {
+  if (!m) return "";
+  const main = m.main_on ? `${m.bright}% · ${m.ct}K` : "屏幕灯关";
+  const fx = MODE_FX_LABEL[m.bg_fx] || m.bg_fx || "静态";
+  const bg = m.bg_on ? `${fx} ${m.bg_bright}%` : "氛围灯关";
+  return `${main} · ${bg}`;
+}
+
+function renderModeCards() {
+  document.querySelectorAll(".mode-card").forEach((card) => {
+    const id = card.dataset.mode;
+    const m = modesCache[id];
+    const nameEl = card.querySelector(".mode-card-name");
+    const subEl = card.querySelector("[data-mode-sub]");
+    if (nameEl && m?.name) nameEl.textContent = m.name;
+    if (subEl) subEl.textContent = modeCardSubtext(m);
+    if (m?.bg_hex) {
+      card.style.setProperty("--mode-accent", m.bg_hex);
+    }
+  });
 }
 
 let _modeApplySeq = 0;
 let _modeApplyTimer = null;
 function applyMode(modeId) {
   const m = modesCache[modeId];
-  // 先更新 UI，连点只下发最后一次
   document.querySelectorAll(".mode-card").forEach((c) => {
     c.classList.toggle("selected", c.dataset.mode === modeId);
   });
   if (m) {
-    // 亮度/色温可先反映模式；底栏电源等 apply 后再按灯具实态对齐
     $("mainBright").value = m.bright;
     $("mainBrightVal").textContent = m.bright;
     $("bgBright").value = m.bg_bright;
@@ -352,7 +380,6 @@ function applyMode(modeId) {
       $("connText").textContent = "模式切换失败（可能配额冷却）";
       return;
     }
-    // 用 apply 回写状态，避免立刻 force 快照偶发空值把底栏电源刷乱
     if (data?.state) applyLampStateToUi(data.state, { force: true });
     else await refreshState({ force: true }).catch(() => {});
   }, 40);
@@ -380,68 +407,211 @@ document.querySelectorAll(".mode-gear-btn").forEach((btn) => {
   });
 });
 
+function showModeSheetLevel(level) {
+  // level: 'home' | 'main' | 'bg'
+  modeFieldEditing = level === "home" ? null : level;
+  if ($("modeSheetHome")) $("modeSheetHome").hidden = level !== "home";
+  if ($("modeMainEditor")) $("modeMainEditor").hidden = level !== "main";
+  if ($("modeBgEditor")) $("modeBgEditor").hidden = level !== "bg";
+  if ($("modeSheetActions")) $("modeSheetActions").hidden = level !== "home";
+  if ($("modeEditorActions")) $("modeEditorActions").hidden = level === "home";
+  const title = $("modeSheetTitle");
+  if (title) {
+    title.textContent =
+      level === "main" ? "编辑屏幕灯" : level === "bg" ? "编辑氛围灯" : "模式详情";
+  }
+}
+
 function openModeSheet(modeId) {
   editingModeId = modeId;
-  draftMode = { ...(modesCache[modeId] || {}) };
+  draftMode = {
+    colors: ["#2A5BFF", "#AF52DE", "#34C759", "#FF9500"],
+    ...(modesCache[modeId] || {}),
+  };
+  if (!Array.isArray(draftMode.bg_colors)) {
+    draftMode.bg_colors = ["#2A5BFF", "#AF52DE", "#34C759", "#FF9500"];
+  }
+  showModeSheetLevel("home");
   renderModeSheet();
   $("modeSheet").hidden = false;
 }
 
 function closeModeSheet() {
   $("modeSheet").hidden = true;
+  modeFieldEditing = null;
   editingModeId = null;
   draftMode = null;
+  showModeSheetLevel("home");
+}
+
+function modeDraftGuarding() {
+  return !!(editingModeId && draftMode && modeFieldEditing);
 }
 
 function renderModeSheet() {
   if (!draftMode) return;
-  $("modeNameLabel").textContent = draftMode.name || editingModeId;
+  const nameInput = $("modeNameInput");
+  if (nameInput) nameInput.value = draftMode.name || editingModeId || "";
   setToggle($("modeMainToggle"), !!draftMode.main_on);
   setToggle($("modeBgToggle"), !!draftMode.bg_on);
-  $("modeMainTags").innerHTML = `
-    <span class="tag">亮度${draftMode.bright}%</span>
-    <span class="tag">色温${draftMode.ct}K</span>`;
+  if ($("modeMainTags")) {
+    $("modeMainTags").innerHTML = draftMode.main_on
+      ? `<span class="tag">亮度${draftMode.bright}%</span><span class="tag">色温${draftMode.ct}K</span>`
+      : `<span class="tag">关闭</span>`;
+  }
   const fx = MODE_FX_LABEL[draftMode.bg_fx] || draftMode.bg_fx;
-  $("modeBgTags").innerHTML = `
-    <span class="tag">${fx}</span>
-    <span class="mini-swatch" id="modeBgSwatch" style="background:${draftMode.bg_hex}"></span>
-    <span class="tag">亮度${draftMode.bg_bright}%</span>
-    ${draftMode.bg_fx !== "static" ? `<span class="tag">速率${draftMode.bg_speed_ms}ms</span>` : ""}`;
+  if ($("modeBgTags")) {
+    $("modeBgTags").innerHTML = draftMode.bg_on
+      ? `<span class="tag">${fx}</span>
+         <span class="mini-swatch" style="background:${draftMode.bg_hex}"></span>
+         <span class="tag">亮度${draftMode.bg_bright}%</span>
+         ${draftMode.bg_fx !== "static" ? `<span class="tag">速率${draftMode.bg_speed_ms}ms</span>` : ""}`
+      : `<span class="tag">关闭</span>`;
+  }
 }
 
-$("modeSheetBack")?.addEventListener("click", closeModeSheet);
+function fillModeMainEditor() {
+  if (!draftMode) return;
+  const ct = Number(draftMode.ct) || 4000;
+  const bright = Number(draftMode.bright) || 50;
+  if ($("modeMainCt")) $("modeMainCt").value = String(ct);
+  if ($("modeMainCtVal")) $("modeMainCtVal").textContent = String(ct);
+  if ($("modeMainBright")) $("modeMainBright").value = String(bright);
+  if ($("modeMainBrightVal")) $("modeMainBrightVal").textContent = String(bright);
+  document.querySelectorAll("#modeCtPresets .ct-preset").forEach((b) => {
+    b.classList.toggle("active", Number(b.dataset.ct) === ct);
+  });
+}
+
+function fillModeBgEditor() {
+  if (!draftMode) return;
+  const fx = draftMode.bg_fx || "static";
+  document.querySelectorAll("#modeBgFxSeg .seg-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.fx === fx);
+  });
+  document.querySelectorAll("#modeBgDirSeg .seg-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.dir === (draftMode.bg_direction || "out"));
+  });
+  const bright = Number(draftMode.bg_bright) || 40;
+  if ($("modeBgBright")) $("modeBgBright").value = String(bright);
+  if ($("modeBgBrightVal")) $("modeBgBrightVal").textContent = String(bright);
+  const speed = Number(draftMode.bg_speed_ms) || 2100;
+  if ($("modeBgSpeed")) $("modeBgSpeed").value = String(speed);
+  if ($("modeBgSpeedVal")) $("modeBgSpeedVal").textContent = String(speed);
+  modeSelectedPresetHex = String(draftMode.bg_hex || "#C0FF73").toUpperCase();
+  document.querySelectorAll("#modeBgPresets .color-dot").forEach((b) => {
+    const hex = String(b.dataset.hex || "").toUpperCase();
+    b.classList.toggle("active", hex === modeSelectedPresetHex);
+  });
+  const colors = Array.isArray(draftMode.bg_colors) ? draftMode.bg_colors : [];
+  document.querySelectorAll("#modeBgCycleColors .color-dot").forEach((b) => {
+    const i = Number(b.dataset.idx);
+    const hex = colors[i] || "#888888";
+    b.style.background = hex;
+    b.dataset.hex = hex;
+  });
+  updateModeBgEditorVisibility();
+}
+
+function updateModeBgEditorVisibility() {
+  if (!draftMode) return;
+  const fx = draftMode.bg_fx || "static";
+  const isFlow = fx === "flow";
+  const isCycle = fx === "cycle";
+  const isStaticLike = fx === "static" || fx === "breath";
+  if ($("modeBgFlowBlock")) $("modeBgFlowBlock").hidden = !isFlow;
+  if ($("modeBgPresets")) $("modeBgPresets").hidden = !isStaticLike && !isCycle;
+  if ($("modeBgCycleColors")) $("modeBgCycleColors").hidden = !isCycle;
+  if ($("modeBgCycleHint")) $("modeBgCycleHint").hidden = !isCycle;
+  if ($("modeBgSpeedBlock")) $("modeBgSpeedBlock").hidden = fx === "static";
+  if ($("modeBgColorBlock")) $("modeBgColorBlock").hidden = isFlow;
+}
+
+function enterModeFieldEdit(which) {
+  if (!draftMode || !editingModeId) return;
+  if (which === "bg") {
+    fillModeBgEditor();
+    showModeSheetLevel("bg");
+    previewModeDraft({ bg: true });
+  } else {
+    fillModeMainEditor();
+    showModeSheetLevel("main");
+    previewModeDraft({ main: true });
+  }
+}
+
+function finishModeFieldEdit() {
+  if (!draftMode) {
+    showModeSheetLevel("home");
+    return;
+  }
+  // 控件值已在 input 时写入 draft
+  showModeSheetLevel("home");
+  renderModeSheet();
+}
+
+function previewModeDraft({ main = false, bg = false } = {}) {
+  if (!draftMode) return;
+  if (main && draftMode.main_on) {
+    const bright = Number(draftMode.bright);
+    const ct = Number(draftMode.ct);
+    pushBright("main", bright);
+    api("/api/ct", { method: "POST", body: { ct } }).catch(() => {});
+    mainCt = ct;
+    $("mainBright").value = String(bright);
+    $("mainBrightVal").textContent = String(bright);
+    drawCtWheel();
+  }
+  if (bg && draftMode.bg_on && driveMode !== "music") {
+    api("/api/bg/fx", {
+      method: "POST",
+      body: {
+        fx: draftMode.bg_fx || "static",
+        bright: Number(draftMode.bg_bright) || 40,
+        speed_ms: Number(draftMode.bg_speed_ms) || 3800,
+        hex: draftMode.bg_hex,
+        colors: draftMode.bg_colors,
+        direction: draftMode.bg_direction || "out",
+      },
+    }).catch(() => {});
+  }
+}
+
+const previewModeMain = debounce(() => previewModeDraft({ main: true }), 120);
+const previewModeBg = debounce(() => previewModeDraft({ bg: true }), 160);
+
+$("modeSheetBack")?.addEventListener("click", () => {
+  if (modeFieldEditing) {
+    finishModeFieldEdit();
+    return;
+  }
+  closeModeSheet();
+});
+$("modeEditorDone")?.addEventListener("click", finishModeFieldEdit);
 $("modeMainToggle")?.addEventListener("click", () => {
   if (!draftMode) return;
   draftMode.main_on = $("modeMainToggle").getAttribute("aria-pressed") !== "true";
   setToggle($("modeMainToggle"), draftMode.main_on);
+  renderModeSheet();
 });
 $("modeBgToggle")?.addEventListener("click", () => {
   if (!draftMode) return;
   draftMode.bg_on = $("modeBgToggle").getAttribute("aria-pressed") !== "true";
   setToggle($("modeBgToggle"), draftMode.bg_on);
+  renderModeSheet();
 });
-$("modeEditMain")?.addEventListener("click", () => {
-  closeModeSheet();
-  document.querySelector('.tab[data-tab="main"]').click();
+$("modeNameInput")?.addEventListener("input", (e) => {
+  if (!draftMode) return;
+  draftMode.name = String(e.target.value || "").slice(0, 16);
 });
-$("modeEditBg")?.addEventListener("click", () => {
-  closeModeSheet();
-  document.querySelector('.tab[data-tab="ambient"]').click();
-});
+$("modeEditMain")?.addEventListener("click", () => enterModeFieldEdit("main"));
+$("modeEditBg")?.addEventListener("click", () => enterModeFieldEdit("bg"));
 $("modeSave")?.addEventListener("click", async () => {
   if (!editingModeId || !draftMode) return;
-  // 把当前氛围灯页状态并入草稿
-  draftMode.bg_fx = ambientFx.fx;
-  draftMode.bg_bright = Number($("bgBright").value);
-  draftMode.bg_speed_ms = Number($("bgSpeed")?.value || ambientFx.speed_ms);
-  draftMode.bg_hex = bgHex;
-  draftMode.bg_colors = ambientFx.colors;
-  draftMode.bg_direction = ambientFx.direction;
-  draftMode.bright = Number($("mainBright").value);
-  draftMode.ct = mainCt;
+  if ($("modeNameInput")) draftMode.name = String($("modeNameInput").value || draftMode.name).slice(0, 16);
   await api(`/api/modes/${editingModeId}`, { method: "PATCH", body: draftMode });
   await loadModes();
-  await applyMode(editingModeId);
+  applyMode(editingModeId);
   closeModeSheet();
 });
 $("modeReset")?.addEventListener("click", async () => {
@@ -450,8 +620,92 @@ $("modeReset")?.addEventListener("click", async () => {
   if (data?.mode) {
     modesCache[editingModeId] = data.mode;
     draftMode = { ...data.mode };
+    if (modeFieldEditing === "main") fillModeMainEditor();
+    else if (modeFieldEditing === "bg") fillModeBgEditor();
     renderModeSheet();
+    renderModeCards();
   }
+});
+
+document.querySelectorAll("#modeCtPresets .ct-preset").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (!draftMode) return;
+    const ct = Number(btn.dataset.ct);
+    draftMode.ct = ct;
+    fillModeMainEditor();
+    previewModeMain();
+  });
+});
+$("modeMainCt")?.addEventListener("input", (e) => {
+  if (!draftMode) return;
+  const ct = Number(e.target.value);
+  draftMode.ct = ct;
+  if ($("modeMainCtVal")) $("modeMainCtVal").textContent = String(ct);
+  document.querySelectorAll("#modeCtPresets .ct-preset").forEach((b) => {
+    b.classList.toggle("active", Number(b.dataset.ct) === ct);
+  });
+  previewModeMain();
+});
+$("modeMainBright")?.addEventListener("input", (e) => {
+  if (!draftMode) return;
+  const bright = Number(e.target.value);
+  draftMode.bright = bright;
+  if ($("modeMainBrightVal")) $("modeMainBrightVal").textContent = String(bright);
+  previewModeMain();
+});
+
+document.querySelectorAll("#modeBgFxSeg .seg-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (!draftMode) return;
+    draftMode.bg_fx = btn.dataset.fx;
+    fillModeBgEditor();
+    previewModeBg();
+  });
+});
+document.querySelectorAll("#modeBgDirSeg .seg-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (!draftMode) return;
+    draftMode.bg_direction = btn.dataset.dir;
+    fillModeBgEditor();
+    previewModeBg();
+  });
+});
+document.querySelectorAll("#modeBgPresets .color-dot").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (!draftMode) return;
+    const hex = String(btn.dataset.hex || "").toUpperCase();
+    modeSelectedPresetHex = hex;
+    draftMode.bg_hex = hex;
+    document.querySelectorAll("#modeBgPresets .color-dot").forEach((b) => {
+      b.classList.toggle("active", String(b.dataset.hex || "").toUpperCase() === hex);
+    });
+    previewModeBg();
+  });
+});
+document.querySelectorAll("#modeBgCycleColors .color-dot").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (!draftMode) return;
+    const i = Number(btn.dataset.idx);
+    if (!Array.isArray(draftMode.bg_colors)) draftMode.bg_colors = [];
+    draftMode.bg_colors[i] = modeSelectedPresetHex;
+    btn.style.background = modeSelectedPresetHex;
+    btn.dataset.hex = modeSelectedPresetHex;
+    previewModeBg();
+  });
+});
+$("modeBgBright")?.addEventListener("input", (e) => {
+  if (!draftMode) return;
+  const bright = Number(e.target.value);
+  draftMode.bg_bright = bright;
+  if ($("modeBgBrightVal")) $("modeBgBrightVal").textContent = String(bright);
+  previewModeBg();
+});
+$("modeBgSpeed")?.addEventListener("input", (e) => {
+  if (!draftMode) return;
+  const speed = Number(e.target.value);
+  draftMode.bg_speed_ms = speed;
+  if ($("modeBgSpeedVal")) $("modeBgSpeedVal").textContent = String(speed);
+  previewModeBg();
 });
 
 function setAmbientFxUi(fx) {
@@ -464,8 +718,8 @@ function setAmbientFxUi(fx) {
   $("fxPanelCycle").hidden = fx !== "cycle";
   $("fxPanelFlow").hidden = fx !== "flow";
   $("speedBlock").hidden = fx === "static";
-  $("bgSpeedVal").textContent = String(ambientFx.speed_ms);
-  $("bgSpeed").value = String(ambientFx.speed_ms);
+  if ($("bgSpeed")) $("bgSpeed").value = String(ambientFx.speed_ms);
+  if ($("bgSpeedVal")) $("bgSpeedVal").textContent = String(ambientFx.speed_ms);
   document.querySelectorAll("#flowDir .dir-btn").forEach((b) => {
     b.classList.toggle("active", b.dataset.dir === ambientFx.direction);
   });
@@ -482,7 +736,9 @@ function renderCycleSeq() {
 async function pushAmbientFx(extra = {}) {
   Object.assign(ambientFx, extra);
   ambientFx.bright = Number($("bgBright").value);
-  ambientFx.speed_ms = Number($("bgSpeed")?.value || ambientFx.speed_ms);
+  if (extra.speed_ms == null && $("bgSpeed")) {
+    ambientFx.speed_ms = Number($("bgSpeed").value);
+  }
   ambientFx.hex = bgHex;
   setBgPowerUi(true, { lock: true });
   return api("/api/bg/fx", {
@@ -508,8 +764,12 @@ document.querySelectorAll(".fx-mode").forEach((btn) => {
 
 document.querySelectorAll("#flowDir .dir-btn").forEach((btn) => {
   btn.addEventListener("click", async () => {
-    await pushAmbientFx({ direction: btn.dataset.dir });
-    setAmbientFxUi("flow");
+    const dir = btn.dataset.dir;
+    ambientFx.direction = dir;
+    document.querySelectorAll("#flowDir .dir-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.dir === dir);
+    });
+    await pushAmbientFx({ fx: "flow", direction: dir });
   });
 });
 
@@ -519,7 +779,7 @@ $("bgSpeed")?.addEventListener(
     const v = Number(e.target.value);
     $("bgSpeedVal").textContent = String(v);
     await pushAmbientFx({ speed_ms: v });
-  }, 180)
+  }, 120)
 );
 
 /* —— Controls —— */
@@ -587,11 +847,200 @@ async function refreshConfig() {
     bgHex = ambientFx.hex;
     setAmbientFxUi(ambientFx.fx);
   }
+  applyCaptureBackendUi(data.sync?.capture_backend);
+  syncCaptureSmoothFromConfig(data.sync);
   applyDriveUi(data);
   return data;
 }
 
+function applyCaptureBackendUi(pref) {
+  const raw = String(pref || "auto").toLowerCase();
+  captureBackendPref =
+    raw === "mss" || raw === "stream" || raw === "auto" ? raw : "auto";
+  document.querySelectorAll("#captureBackendSeg .seg-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.backend === captureBackendPref);
+  });
+}
+
+function resolveSmoothSource(sync) {
+  const active = _lastActiveSource;
+  if (active && SOURCES.includes(active) && sync?.[active]?.enabled !== false) {
+    return active;
+  }
+  const order = Array.isArray(sync?.priority) ? sync.priority : SOURCES;
+  for (const source of order) {
+    if (SOURCES.includes(source) && sync?.[source]?.enabled !== false) return source;
+  }
+  return "iina";
+}
+
+function syncCaptureSmoothFromConfig(syncCfg, effective) {
+  if (_captureSmoothEditing) return;
+  const source = resolveSmoothSource(syncCfg || {});
+  _captureSmoothSource = source;
+  const p = syncCfg?.[source] || {};
+  const sm = Math.round(
+    Number(p.color_smooth ?? (SMOOTH_DEFAULT[source] || 20) / 100) * 100
+  );
+  const input = $("captureColorSmooth");
+  if (input && document.activeElement !== input) input.value = String(sm);
+  updateCaptureSmoothHint(effective, sm);
+}
+
+function updateCaptureSmoothHint(effective, basePct) {
+  const hint = $("captureSmoothHint");
+  const em = $("captureSmoothEffective");
+  const streamish =
+    captureBackendPref === "stream" ||
+    (typeof effective === "number" &&
+      typeof basePct === "number" &&
+      Math.round(effective * 100) > basePct + 1);
+  if (!hint || !em) return;
+  if (streamish && typeof effective === "number") {
+    em.textContent = String(Math.round(effective * 100));
+    hint.hidden = false;
+  } else if (streamish && captureBackendPref === "stream") {
+    const boosted = Math.min(100, (basePct ?? 0) + 16);
+    em.textContent = String(boosted);
+    hint.hidden = false;
+  } else {
+    hint.hidden = true;
+  }
+}
+
+async function setCaptureBackend(backend) {
+  const next =
+    backend === "mss" || backend === "stream" || backend === "auto" ? backend : "auto";
+  applyCaptureBackendUi(next);
+  await api("/api/config", {
+    method: "PATCH",
+    body: { sync: { capture_backend: next } },
+  });
+  await refreshSync();
+}
+
+document.querySelectorAll("#captureBackendSeg .seg-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.backend && btn.dataset.backend !== captureBackendPref) {
+      setCaptureBackend(btn.dataset.backend);
+    }
+  });
+});
+
+(() => {
+  const input = $("captureColorSmooth");
+  if (!input) return;
+  const commit = debounce(async () => {
+    let val = Math.round(Number(input.value));
+    if (!Number.isFinite(val)) val = SMOOTH_DEFAULT[_captureSmoothSource] || 20;
+    val = Math.max(0, Math.min(100, val));
+    input.value = String(val);
+    const source = _captureSmoothSource || "iina";
+    const slider = sid(source, "colorSmooth");
+    const label = sid(source, "smoothVal");
+    if (slider) slider.value = String(val);
+    if (label) label.textContent = String(val);
+    updateCaptureSmoothHint(null, val);
+    _captureSmoothEditing = false;
+    await patchSourceImmediate(source, { color_smooth: val / 100 });
+    await refreshSync();
+  }, 160);
+  input.addEventListener("focus", () => {
+    _captureSmoothEditing = true;
+  });
+  input.addEventListener("input", () => {
+    _captureSmoothEditing = true;
+    commit();
+  });
+  input.addEventListener("change", () => {
+    _captureSmoothEditing = true;
+    commit();
+  });
+  input.addEventListener("blur", () => {
+    _captureSmoothEditing = false;
+  });
+})();
+
 let driveMode = "picture";
+/** 双击小点后的会话级露出；关窗即清。持久显隐走配置。 */
+let nightEntryTemp = false;
+let nightToastSeen = false;
+let nightEntryPersist = false;
+/** 单击「夜色模式.」后显示状态条 */
+let nightStatusShow = false;
+/** 进入夜色前的效果勾选，取消夜色时恢复 */
+let stylesBeforeNight = null;
+let captureBackendPref = "auto";
+let _captureSmoothSource = "iina";
+let _captureSmoothEditing = false;
+
+const MUSIC_HINT_DEFAULT =
+  "颜色跟着曲风走，换段大约零点二秒内跟上。节拍只在设定亮度里轻轻亮一下。<br />音量拉开强弱。频谱沿着当前颜色左暖右冷。节拍换边要开着频谱分色，每拍左右对调。";
+const MUSIC_HINT_NIGHT =
+  "跟着一下一下的节奏亮暗；到顶会有短暂收束光。声线只轻轻垫着。";
+
+let toastTimer = null;
+function showToast(message, ms = 4200) {
+  const el = $("appToast");
+  if (!el || !message) return;
+  el.textContent = message;
+  el.hidden = false;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.hidden = true;
+    toastTimer = null;
+  }, ms);
+}
+
+function nightEntryVisible() {
+  return !!(nightEntryPersist || nightEntryTemp);
+}
+
+function applyNightEntryUi() {
+  const nightOn = !!$("musicStyleNight")?.checked;
+  const wrap = $("musicStyleNightWrap");
+  // 已开启时始终露出勾选项，避免入口收起后无法关掉
+  if (wrap) wrap.hidden = !(nightEntryVisible() || nightOn);
+  document.querySelector(".music-checks")?.classList.toggle("night-on", nightOn);
+  const hint = $("musicEffectHint");
+  if (hint) {
+    hint.innerHTML = nightOn ? MUSIC_HINT_NIGHT : MUSIC_HINT_DEFAULT;
+  }
+  const paletteSeg = $("musicPaletteSeg");
+  if (paletteSeg) {
+    paletteSeg.style.opacity = nightOn ? "0.38" : "";
+    paletteSeg.style.pointerEvents = nightOn ? "none" : "";
+  }
+  if (!nightOn) {
+    nightStatusShow = false;
+    const st = $("musicNightStatusText");
+    if (st) {
+      st.hidden = true;
+      st.textContent = "";
+    }
+  } else {
+    updateNightStatusText(null);
+  }
+}
+
+function formatNightStatus(night) {
+  if (!night) return "(- 0 0)";
+  const pat = night.pattern != null ? String(night.pattern) : "-";
+  const force = Math.max(0, Math.min(9, Number(night.force) || 0));
+  const climax = Math.max(0, Math.min(9, Number(night.climax) || 0));
+  return `(${pat} ${force} ${climax})`;
+}
+
+function updateNightStatusText(night) {
+  const st = $("musicNightStatusText");
+  if (!st) return;
+  if (!nightStatusShow || !$("musicStyleNight")?.checked) {
+    st.hidden = true;
+    return;
+  }
+  st.hidden = false;
+  if (night) st.textContent = " " + formatNightStatus(night);
+}
 
 function applyDriveUi(data) {
   driveMode = data?.drive_mode === "music" ? "music" : "picture";
@@ -600,16 +1049,23 @@ function applyDriveUi(data) {
     btn.classList.toggle("active", btn.dataset.drive === driveMode);
   });
   const music = data?.music || {};
+  if (typeof music.night_mode_entry_visible === "boolean") {
+    nightEntryPersist = music.night_mode_entry_visible;
+  }
+  if (typeof music.night_mode_toast_seen === "boolean") {
+    nightToastSeen = music.night_mode_toast_seen;
+  }
   if (driveMode === "music") {
     const bright = Number(music.bright ?? 40);
     $("bgBright").value = String(bright);
     $("bgBrightVal").textContent = String(bright);
   }
   if ($("musicBrightHint")) $("musicBrightHint").hidden = driveMode !== "music";
+  if ($("modeMusicHint")) $("modeMusicHint").hidden = driveMode !== "music";
   if ($("driveStatus") && !data?.statusError) {
     $("driveStatus").textContent =
       driveMode === "music"
-        ? "音乐跃动开着，氛围灯跟声音。屏幕灯可以照常用模式改"
+        ? "音乐跃动开着，氛围灯跟声音。可临时关掉氛围灯；屏幕灯照常"
         : "追色按优先级跟画面";
   }
   const input = music.input === "mic" ? "mic" : "system";
@@ -617,15 +1073,30 @@ function applyDriveUi(data) {
     btn.classList.toggle("active", btn.dataset.input === input);
   });
   const styles = new Set(music.styles || ["beat"]);
-  for (const id of ["musicStyleBeat", "musicStyleLoud", "musicStyleSpec"]) {
+  const nightOn = styles.has("night");
+  const remembered =
+    Array.isArray(stylesBeforeNight) && stylesBeforeNight.length
+      ? stylesBeforeNight
+      : ["beat"];
+  for (const id of [
+    "musicStyleBeat",
+    "musicStyleLoud",
+    "musicStyleSpec",
+    "musicStyleSwap",
+    "musicStyleNight",
+  ]) {
     const el = $(id);
-    if (el) el.checked = styles.has(el.dataset.style);
+    if (!el) continue;
+    if (id === "musicStyleNight") el.checked = nightOn;
+    else if (nightOn) el.checked = remembered.includes(el.dataset.style);
+    else el.checked = styles.has(el.dataset.style);
   }
   const palette = music.palette === "ambient" ? "ambient" : "builtin";
   document.querySelectorAll("#musicPaletteSeg .seg-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.palette === palette);
   });
-  if ($("bgPower")) $("bgPower").disabled = driveMode === "music";
+  if ($("bgPower")) $("bgPower").disabled = false;
+  applyNightEntryUi();
 }
 
 async function setDrive(mode) {
@@ -655,7 +1126,8 @@ async function setDrive(mode) {
 }
 
 function checkedMusicStyles() {
-  return ["musicStyleBeat", "musicStyleLoud", "musicStyleSpec"]
+  if ($("musicStyleNight")?.checked) return ["night"];
+  return ["musicStyleBeat", "musicStyleLoud", "musicStyleSpec", "musicStyleSwap"]
     .map((id) => $(id))
     .filter((el) => el && el.checked)
     .map((el) => el.dataset.style);
@@ -684,6 +1156,7 @@ async function refreshMusicStatus() {
   if (data.drive_mode !== "music") {
     $("musicStatus").textContent = "未开启。在模式页或菜单切换追色 / 音乐跃动";
     setMusicPermActionsVisible(false);
+    updateNightStatusText(null);
     return;
   }
   $("musicStatus").textContent = err || (data.status?.running ? `正在听${input}` : "正在启动");
@@ -693,6 +1166,11 @@ async function refreshMusicStatus() {
   setMusicPermActionsVisible(needScreen);
   if ($("driveStatus")) {
     $("driveStatus").textContent = err || `音乐跃动 · 正在听${input}`;
+  }
+  if (nightStatusShow && (data.music?.styles || []).includes("night")) {
+    updateNightStatusText(data.status?.night || { pattern: "-", force: 0, climax: 0 });
+  } else {
+    updateNightStatusText(null);
   }
 }
 
@@ -725,16 +1203,131 @@ document.querySelectorAll("#musicPaletteSeg .seg-btn").forEach((btn) => {
   btn.addEventListener("click", () => patchMusic({ palette: btn.dataset.palette }));
 });
 
+function collectNonNightStyles() {
+  return ["musicStyleBeat", "musicStyleLoud", "musicStyleSpec", "musicStyleSwap"]
+    .map((id) => $(id))
+    .filter((box) => box && box.checked)
+    .map((box) => box.dataset.style);
+}
+
+function applyRememberedStyleChecks(styles) {
+  const set = new Set(styles?.length ? styles : ["beat"]);
+  for (const id of ["musicStyleBeat", "musicStyleLoud", "musicStyleSpec", "musicStyleSwap"]) {
+    const box = $(id);
+    if (box) box.checked = set.has(box.dataset.style);
+  }
+}
+
 document.querySelectorAll(".music-checks input").forEach((el) => {
   el.addEventListener("change", () => {
+    if (el.dataset.style === "night") {
+      if (el.checked) {
+        const prev = collectNonNightStyles();
+        stylesBeforeNight = prev.length ? prev : ["beat"];
+        applyRememberedStyleChecks(stylesBeforeNight);
+      } else {
+        const restore =
+          Array.isArray(stylesBeforeNight) && stylesBeforeNight.length
+            ? stylesBeforeNight
+            : ["beat"];
+        applyRememberedStyleChecks(restore);
+        stylesBeforeNight = null;
+      }
+      applyNightEntryUi();
+    } else if (el.checked && $("musicStyleNight")?.checked) {
+      $("musicStyleNight").checked = false;
+      stylesBeforeNight = null;
+      applyNightEntryUi();
+    }
     const styles = checkedMusicStyles();
     if (!styles.length) {
       el.checked = true;
       return;
     }
-    patchMusic({ styles: checkedMusicStyles() });
+    patchMusic({ styles });
   });
 });
+
+(() => {
+  const dot = $("musicEasterDot");
+  if (!dot) return;
+  const WINDOW_MS = 520;
+  let clicks = 0;
+  let timer = null;
+
+  function resetClicks() {
+    clicks = 0;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  async function maybeToastHint() {
+    if (nightToastSeen) return;
+    nightToastSeen = true;
+    showToast(
+      "双击显示夜色模式；关掉窗口后会收起。三击可固定显示，再三击恢复隐藏。"
+    );
+    await patchMusic({ night_mode_toast_seen: true });
+  }
+
+  async function onGesture(count) {
+    await maybeToastHint();
+    if (count >= 3) {
+      const next = !nightEntryPersist;
+      nightEntryPersist = next;
+      nightEntryTemp = false;
+      applyNightEntryUi();
+      showToast(next ? "夜色模式已固定显示" : "夜色模式已恢复隐藏", 2800);
+      await patchMusic({ night_mode_entry_visible: next });
+      return;
+    }
+    if (count === 2) {
+      nightEntryTemp = true;
+      applyNightEntryUi();
+    }
+  }
+
+  function handleTap(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    clicks += 1;
+    if (clicks === 1) maybeToastHint().catch(() => {});
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const n = clicks;
+      resetClicks();
+      if (n >= 2) await onGesture(n);
+    }, WINDOW_MS);
+  }
+
+  dot.addEventListener("click", handleTap);
+  dot.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") handleTap(e);
+  });
+})();
+
+(() => {
+  const statusDot = $("musicNightStatusDot");
+  if (!statusDot) return;
+  const toggle = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!$("musicStyleNight")?.checked) return;
+    nightStatusShow = !nightStatusShow;
+    if (nightStatusShow) {
+      updateNightStatusText({ pattern: "-", force: 0, climax: 0 });
+      refreshMusicStatus().catch(() => {});
+    } else {
+      updateNightStatusText(null);
+    }
+  };
+  statusDot.addEventListener("click", toggle);
+  statusDot.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") toggle(e);
+  });
+})();
 
 function fillSourceForm(source, p) {
   const ch = p.channels || {};
@@ -958,10 +1551,7 @@ async function patchPriority(order) {
 
 async function refreshState(opts = {}) {
   const force = !!opts.force;
-  if (force) {
-    mainPowerLockUntil = 0;
-    bgPowerLockUntil = 0;
-  }
+  // force 不再清电源锁：开关过程中强刷会把中间态盖进 UI
   const { data } = await api(`/api/state${force ? "?force=true" : ""}`);
   const pill = $("connPill");
   if (!data?.connected) {
@@ -984,30 +1574,32 @@ function applyLampStateToUi(s, { force = false } = {}) {
   const now = performance.now();
   const mainOn = parsePowerOn(s.main_power) ?? parsePowerOn(s.power);
   const bgOn = parsePowerOn(s.bg_power);
-  // 空值不改 UI，避免切页/强刷把开着的灯显示成关
-  if (mainOn !== null && (force || now > mainPowerLockUntil)) {
+  // 电源锁优先：即使 force 也不在用户刚点开关时盖掉
+  if (mainOn !== null && now > mainPowerLockUntil) {
     setMainPowerUi(mainOn);
   }
-  if (bgOn !== null && (force || now > bgPowerLockUntil)) {
+  if (bgOn !== null && now > bgPowerLockUntil) {
     setBgPowerUi(bgOn);
   }
+  // 模式字段编辑中：不要被切页 force 刷新盖掉草稿预填值
+  const guardDraft = modeDraftGuarding();
   if (s.bright != null && s.bright !== "" && !mainBrightDragging && !ctDragging) {
-    if (!channelSyncing("main")) {
+    if (!guardDraft && !channelSyncing("main")) {
       $("mainBright").value = s.bright;
       $("mainBrightVal").textContent = s.bright;
     }
   }
-  if (s.ct != null && s.ct !== "" && !ctDragging) {
+  if (s.ct != null && s.ct !== "" && !ctDragging && !guardDraft) {
     mainCt = Number(s.ct);
     drawCtWheel();
   }
   if (driveMode !== "music" && s.bg_bright != null && s.bg_bright !== "") {
-    if (!channelSyncing("bg")) {
+    if (!guardDraft && !channelSyncing("bg")) {
       $("bgBright").value = s.bg_bright;
       $("bgBrightVal").textContent = s.bg_bright;
     }
   }
-  if (driveMode !== "music" && s.bg_rgb_hex) {
+  if (driveMode !== "music" && s.bg_rgb_hex && !guardDraft) {
     bgHex = String(s.bg_rgb_hex).toUpperCase();
     drawRgbWheel();
   }
@@ -1023,6 +1615,20 @@ async function refreshSync() {
 
   const active = sync?.source;
   _lastActiveSource = active || _lastActiveSource;
+  if (sync?.capture_backend_pref) applyCaptureBackendUi(sync.capture_backend_pref);
+  else if (sync?.capture_backend) applyCaptureBackendUi(sync.capture_backend);
+  const params = sync?.params || {};
+  syncCaptureSmoothFromConfig(
+    {
+      priority: sync?.priority,
+      iina: { ...(params.iina || {}), enabled: sync?.iina_enabled },
+      browser: { ...(params.browser || {}), enabled: sync?.browser_enabled },
+      screen: { ...(params.screen || {}), enabled: sync?.screen_enabled },
+    },
+    typeof sync?.color_smooth_effective === "number"
+      ? sync.color_smooth_effective
+      : null
+  );
   if ($("activeSourceLine")) {
     if (sync?.active && SOURCE_LABELS[active]) {
       $("activeSourceLine").textContent = `当前：${SOURCE_LABELS[active]}`;
@@ -1258,6 +1864,11 @@ for (const source of SOURCES) {
                 ? sid(source, "mainBrightSmoothVal")
                 : sid(source, "bgBrightSmoothVal");
           if (label) label.textContent = String(val);
+          if (key === "color_smooth" && source === _captureSmoothSource) {
+            const top = $("captureColorSmooth");
+            if (top && document.activeElement !== top) top.value = String(val);
+            updateCaptureSmoothHint(null, val);
+          }
           val = val / 100;
         } else if (key === "main_bright_range") {
           const label = sid(source, "mainBrightRangeVal");
@@ -1279,8 +1890,14 @@ for (const source of SOURCES) {
       else if (key === "main_bright_range") val = RANGE_DEFAULT_MAIN;
       else val = RANGE_DEFAULT_BG;
       if (key === "color_smooth") {
-        sid(source, "colorSmooth").value = String(Math.round(val * 100));
-        sid(source, "smoothVal").textContent = String(Math.round(val * 100));
+        const pct = Math.round(val * 100);
+        sid(source, "colorSmooth").value = String(pct);
+        sid(source, "smoothVal").textContent = String(pct);
+        if (source === _captureSmoothSource) {
+          const top = $("captureColorSmooth");
+          if (top) top.value = String(pct);
+          updateCaptureSmoothHint(null, pct);
+        }
       } else if (key === "main_bright_smooth") {
         sid(source, "mainBrightSmooth").value = String(Math.round(val * 100));
         sid(source, "mainBrightSmoothVal").textContent = String(Math.round(val * 100));
@@ -1426,7 +2043,6 @@ $("btnConnect").addEventListener("click", async () => {
   await refreshState({ force: true });
 });
 
-
 $("btnDiscover").addEventListener("click", async () => {
   $("connText").textContent = "正在发现设备…";
   const { data } = await api("/api/discover");
@@ -1442,6 +2058,8 @@ $("btnDiscover").addEventListener("click", async () => {
 $("mainPower").addEventListener("click", async () => {
   const on = $("mainPower").getAttribute("aria-pressed") !== "true";
   setMainPowerUi(on, { lock: true });
+  // 锁定另一路，避免回包里的状态把氛围开关带跑
+  bgPowerLockUntil = performance.now() + 1200;
   try {
     const { status, data } = await api("/api/power", {
       method: "POST",
@@ -1452,7 +2070,10 @@ $("mainPower").addEventListener("click", async () => {
       $("connText").textContent = "开关失败";
       return;
     }
-    if (data?.state) applyLampStateToUi(data.state, { force: true });
+    if (data?.state) {
+      setMainPowerUi(on, { lock: true });
+      applyLampStateToUi(data.state);
+    }
   } catch (_) {
     setMainPowerUi(!on, { lock: true });
   }
@@ -1461,6 +2082,7 @@ $("mainPower").addEventListener("click", async () => {
 $("bgPower").addEventListener("click", async () => {
   const on = $("bgPower").getAttribute("aria-pressed") !== "true";
   setBgPowerUi(on, { lock: true });
+  mainPowerLockUntil = performance.now() + 1200;
   try {
     const { status, data } = await api("/api/power", {
       method: "POST",
@@ -1471,7 +2093,10 @@ $("bgPower").addEventListener("click", async () => {
       $("connText").textContent = "开关失败";
       return;
     }
-    if (data?.state) applyLampStateToUi(data.state, { force: true });
+    if (data?.state) {
+      setBgPowerUi(on, { lock: true });
+      applyLampStateToUi(data.state);
+    }
   } catch (_) {
     setBgPowerUi(!on, { lock: true });
   }
@@ -1480,9 +2105,11 @@ $("bgPower").addEventListener("click", async () => {
 let _brightSeq = 0;
 function pushBright(target, bright) {
   const seq = ++_brightSeq;
-  // 调亮度会开对应灯，底栏与页面状态联动
+  // 调亮度一般会开对应灯；氛围已关时不把 UI 强行改成 ON（夜色关氛围后拖亮度）
   if (target === "main") setMainPowerUi(true, { lock: true });
-  else setBgPowerUi(true, { lock: true });
+  else if ($("bgPower")?.getAttribute("aria-pressed") === "true") {
+    setBgPowerUi(true, { lock: true });
+  }
   api("/api/bright", { method: "POST", body: { target, bright } }).then(({ status }) => {
     if (status >= 400 && seq === _brightSeq) {
       $("connText").textContent = "调光失败";
@@ -1731,11 +2358,15 @@ async function boot() {
   drawCtWheel();
   drawRgbWheel();
   fillAppVersion().catch(() => {});
+  // 启动默认 OFF，等灯端真实开关再点亮底栏，避免假 ON
+  setMainPowerUi(false);
+  setBgPowerUi(false);
   const ready = await connectLocal();
   if (ready) {
     try {
       const data = await refreshConfig();
       await loadModes();
+      // 强制从灯端拉 main_power / bg_power
       await refreshState({ force: true });
       await refreshSync();
       setAmbientFxUi(ambientFx.fx);
@@ -1759,6 +2390,14 @@ async function boot() {
     }
   }, 2500);
   document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      // 关完整配置窗（实际是 hide）：清掉双击临时露出
+      if (nightEntryTemp) {
+        nightEntryTemp = false;
+        applyNightEntryUi();
+      }
+      return;
+    }
     if (document.visibilityState === "visible") {
       refreshState({ force: true }).catch(() => {});
       const syncPanel = $("panel-sync");

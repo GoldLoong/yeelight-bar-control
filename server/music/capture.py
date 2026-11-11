@@ -1,4 +1,8 @@
-"""电脑播放（ScreenCaptureKit）和麦克风（AVAudioEngine）采样。"""
+"""电脑播放和麦克风采样。
+
+电脑播放优先走 Core Audio 进程采集，不抓画面。建不起来且屏幕录制已授权时，
+才退回 ScreenCaptureKit。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,6 @@ import numpy as np
 
 PushFn = Callable[[np.ndarray, int], None]
 
-
 class SampleRing:
     def __init__(self, rate: int = 48000, seconds: float = 0.5) -> None:
         self.rate = rate
@@ -21,6 +24,7 @@ class SampleRing:
         self._written = 0
         self._read_total = 0
         self._lock = threading.Lock()
+        self._last_push_at = 0.0
 
     def push(self, samples: np.ndarray, rate: int) -> None:
         # 数值计算放在锁外面。锁里如果做会放开 GIL 的 numpy 写入，
@@ -32,9 +36,26 @@ class SampleRing:
             self._chunks.append(mono)
             self._total += int(mono.size)
             self._written += int(mono.size)
+            self._last_push_at = time.monotonic()
             while self._total > self._cap and self._chunks:
                 drop = self._chunks.pop(0)
                 self._total -= int(drop.size)
+
+    def age_ms(self) -> float | None:
+        """距最近一次采到样本的毫秒数；无数据则 None。"""
+        with self._lock:
+            at = float(self._last_push_at)
+        if at <= 0:
+            return None
+        return max(0.0, (time.monotonic() - at) * 1000.0)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._chunks.clear()
+            self._total = 0
+            self._written = 0
+            self._read_total = 0
+            self._last_push_at = 0.0
 
     def take_new(self, max_seconds: float = 0.09) -> np.ndarray:
         """取出还没分析过的采样。落后太多就丢掉旧的，避免补帧时连打一串假节拍。"""
@@ -72,7 +93,6 @@ class SampleRing:
             cat = cat[-need:]
         return np.ascontiguousarray(cat, dtype=np.float32)
 
-
 def _mono(samples: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     arr = np.asarray(samples, dtype=np.float32).reshape(-1)
     if arr.size == 0:
@@ -89,46 +109,20 @@ def _mono(samples: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
         arr = arr / peak
     return arr
 
-
 _PERM_ERROR = (
     "需要屏幕录制权限才能听电脑播放。"
     "请打开系统设置 → 隐私与安全性 → 屏幕录制，打开「Yeelight 显示器挂灯」。"
     "若开关已经开着，请先关掉，完全退出本应用后再打开，然后重新打开应用。"
 )
+_AUDIO_PERM_ERROR = (
+    "需要系统音频录制权限才能听电脑播放。"
+    "请打开系统设置 → 隐私与安全性 → 屏幕与系统音频录制，"
+    "打开「Yeelight 显示器挂灯」的系统音频。"
+)
 _MIC_PERM_ERROR = (
     "没有麦克风权限。"
     "请打开系统设置 → 隐私与安全性 → 麦克风，打开「Yeelight 显示器挂灯」。"
 )
-
-
-# #region agent log
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        import json
-
-        line = json.dumps(
-            {
-                "sessionId": "d219fd",
-                "hypothesisId": hypothesis_id,
-                "location": location,
-                "message": message,
-                "data": data,
-                "timestamp": int(time.time() * 1000),
-            },
-            ensure_ascii=False,
-        )
-        with open(
-            "/Users/totoro/工作/易来控制/.cursor/debug-d219fd.log",
-            "a",
-            encoding="utf-8",
-        ) as fh:
-            fh.write(line + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
-
 
 def _screen_recording_granted() -> bool | None:
     """None 表示查不到。查不到时不要连着调用会弹窗的接口。"""
@@ -140,7 +134,6 @@ def _screen_recording_granted() -> bool | None:
         return bool(CGPreflightScreenCaptureAccess())
     except Exception:
         return None
-
 
 def _live_permissions() -> dict[str, str]:
     """Electron 会持续写入最新 TCC 状态；比进程启动时的环境变量更准。"""
@@ -167,7 +160,6 @@ def _live_permissions() -> dict[str, str]:
     except Exception:
         pass
     return out
-
 
 def sync_permission_file(*, screen: str | None = None, microphone: str | None = None) -> None:
     """用系统预检结果回写权限文件，避免 Electron 误报 denied 覆盖真实授权。"""
@@ -204,7 +196,6 @@ def sync_permission_file(*, screen: str | None = None, microphone: str | None = 
         path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
-
 
 def live_permission_snapshot() -> dict:
     """Electron / API 共用的权限快照；effective_screen 只认 CGPreflight。"""
@@ -243,14 +234,21 @@ def live_permission_snapshot() -> dict:
         "effective_microphone": effective_microphone,
     }
 
-
 def _is_permission_failure(exc: BaseException) -> bool:
     text = str(exc).lower()
     return any(
         token in text
-        for token in ("tcc", "denied", "拒绝", "not authorized", "permission", "屏幕录制", "麦克风")
+        for token in (
+            "tcc",
+            "denied",
+            "拒绝",
+            "not authorized",
+            "permission",
+            "屏幕录制",
+            "系统音频",
+            "麦克风",
+        )
     )
-
 
 class AudioInput:
     def __init__(self) -> None:
@@ -278,48 +276,17 @@ class AudioInput:
             if kind == "system":
                 granted = _screen_recording_granted()
                 parent = live.get("screen") or ""
-                # 权威：CGPreflight。为假时绝不能因权限文件里的假 sticky 去打 SCK（会反复弹窗）。
+                # 系统声音先走 Core Audio tap，不靠屏幕录制预检拦截。
+                # 屏幕录制仍只作为 tap 失败后的回退，且预检为假时不会去打 SCK。
                 if granted is True:
                     if parent != "granted":
                         sync_permission_file(screen="granted")
-                        parent = "granted"
                         live["screen"] = "granted"
-                    allowed = True
                     self._gave_up = False
                     self._system_capture_tried = False
-                elif granted is False:
-                    if parent == "granted":
-                        # 清掉 Electron 误写的 sticky，避免下一 tick 再冲采集。
-                        sync_permission_file(screen="denied")
-                        parent = "denied"
-                        live["screen"] = "denied"
-                    allowed = False
-                else:
-                    # 查不到预检时：仅当父进程明确 granted 时试一次，失败后不再试。
-                    allowed = parent == "granted" and not self._system_capture_tried
-                if not allowed:
-                    if self._stop is not None:
-                        self._close_locked()
-                    self.kind = kind
-                    self.error = _PERM_ERROR
-                    self._gave_up = True
-                    key = f"system:{parent}:{granted}:{self._gave_up}:{self._system_capture_tried}"
-                    if key != self._last_block_log:
-                        self._last_block_log = key
-                        # #region agent log
-                        _agent_log(
-                            "P3",
-                            "capture.py:ensure",
-                            "system blocked — no SCK without preflight",
-                            {
-                                "preflight": granted,
-                                "parent": parent,
-                                "gave_up": self._gave_up,
-                                "tried": self._system_capture_tried,
-                            },
-                        )
-                        # #endregion
-                    return
+                elif granted is False and parent == "granted":
+                    sync_permission_file(screen="denied")
+                    live["screen"] = "denied"
             else:
                 mic_status = live.get("microphone") or ""
                 try:
@@ -342,14 +309,6 @@ class AudioInput:
                     key = f"mic:{mic_status}:{self._mic_tried}"
                     if key != self._last_block_log:
                         self._last_block_log = key
-                        # #region agent log
-                        _agent_log(
-                            "C",
-                            "capture.py:ensure",
-                            "mic blocked on permission",
-                            {"mic_status": mic_status, "tried": self._mic_tried},
-                        )
-                        # #endregion
                     return
             if self.kind == kind and self.error and now < self._retry_after:
                 return
@@ -358,14 +317,6 @@ class AudioInput:
             try:
                 self.packets = 0
                 self.peak = 0.0
-                # #region agent log
-                _agent_log(
-                    "A-C-D",
-                    "capture.py:ensure",
-                    "starting capture",
-                    {"kind": kind, "live": live, "runId": "post-fix"},
-                )
-                # #endregion
                 if kind == "mic":
                     def _mic_push(samples: np.ndarray, rate: int) -> None:
                         if samples is not None and getattr(samples, "size", 0):
@@ -382,35 +333,19 @@ class AudioInput:
                 self._mic_tried = False
                 self._retry_after = 0.0
                 self._last_block_log = ""
-                # #region agent log
-                _agent_log(
-                    "A-C-D",
-                    "capture.py:ensure",
-                    "capture started ok",
-                    {"kind": kind, "runId": "post-fix"},
-                )
-                # #endregion
             except Exception as exc:  # noqa: BLE001
                 self._stop = None
-                # #region agent log
-                _agent_log(
-                    "P3",
-                    "capture.py:ensure",
-                    "capture start failed",
-                    {"kind": kind, "error": str(exc)[:300], "runId": "post-fix"},
-                )
-                # #endregion
                 if kind == "system":
                     # 任何系统声启动失败都先停手，避免 30s 一轮反复触发 TCC。
                     self._system_capture_tried = True
                     self._gave_up = True
-                    if (
-                        _is_permission_failure(exc)
-                        or _screen_recording_granted() is False
-                    ):
-                        self.error = _PERM_ERROR
+                    text = str(exc)
+                    if "系统设置" in text:
+                        self.error = text
+                    elif _is_permission_failure(exc):
+                        self.error = _AUDIO_PERM_ERROR
                     else:
-                        self.error = str(exc)
+                        self.error = text
                     self._retry_after = now + 120.0
                 elif kind == "mic" and _is_permission_failure(exc):
                     self._mic_tried = True
@@ -427,6 +362,7 @@ class AudioInput:
             self.packets = 0
             self.peak = 0.0
             self._close_locked()
+            self.ring.clear()
 
     def _note_packet(self, peak: float) -> None:
         self.packets += 1
@@ -443,8 +379,51 @@ class AudioInput:
             except Exception:
                 pass
 
+_system_backend = ""
+_tap_blocked = False
+
+def last_system_backend() -> str:
+    """当前电脑播放走的路径：tap、sck，或还没打开。"""
+    return _system_backend
+
+def _sck_fallback_allowed() -> bool:
+    """预检明确已授权才回退到屏幕流，避免没权限时反复弹窗。"""
+    granted = _screen_recording_granted()
+    if granted is True:
+        return True
+    if granted is False:
+        return False
+    return _live_permissions().get("screen") == "granted"
 
 def _start_system(push: PushFn, note) -> Callable[[], None]:  # noqa: ANN001
+    global _system_backend, _tap_blocked
+    from server.music.system_tap import TapPermissionError, TapUnavailable, start
+
+    tap_error: BaseException | None = None
+    if not _tap_blocked:
+        try:
+            stop = start(push, note)
+            _system_backend = "tap"
+            return stop
+        except TapPermissionError as exc:
+            # 拒绝后本进程不再重试，避免隔两分钟又弹一次授权。
+            _tap_blocked = True
+            tap_error = exc
+        except TapUnavailable as exc:
+            tap_error = exc
+        except Exception as exc:  # noqa: BLE001
+            tap_error = exc
+    if _sck_fallback_allowed():
+        stop = _start_system_sck(push, note)
+        _system_backend = "sck"
+        return stop
+    if isinstance(tap_error, TapPermissionError) or _tap_blocked:
+        raise RuntimeError(_AUDIO_PERM_ERROR) from tap_error
+    if tap_error is None:
+        raise RuntimeError("系统声音打不开")
+    raise tap_error
+
+def _start_system_sck(push: PushFn, note) -> Callable[[], None]:  # noqa: ANN001
     import ScreenCaptureKit as sck  # type: ignore
 
     content, err = _shareable_content(sck)
@@ -505,7 +484,6 @@ def _start_system(push: PushFn, note) -> Callable[[], None]:  # noqa: ANN001
     stop.holder = holder  # type: ignore[attr-defined]
     return stop
 
-
 def _shareable_content(sck: object) -> tuple[object | None, object | None]:
     done = threading.Event()
     box: dict[str, object] = {}
@@ -520,9 +498,7 @@ def _shareable_content(sck: object) -> tuple[object | None, object | None]:
         return None, "timeout"
     return box.get("content"), box.get("error")
 
-
 _held_queues: list[object] = []
-
 
 def _audio_queue(name: bytes = b"yeelight.music.audio") -> object:
     # ScreenCaptureKit 需要真正的 dispatch 队列。NSOperationQueue 会在
@@ -541,7 +517,6 @@ def _audio_queue(name: bytes = b"yeelight.music.audio") -> object:
     _held_queues.append(queue)
     return queue
 
-
 def _copy_float_channel(channel: object, frames: int) -> np.ndarray:
     """PyObjC 11 的 floatChannelData 是 varlist，不能再 ctypes.cast。"""
     frames = int(frames)
@@ -555,7 +530,6 @@ def _copy_float_channel(channel: object, frames: int) -> np.ndarray:
     ptr = ctypes.cast(channel, ctypes.POINTER(ctypes.c_float))
     return np.ctypeslib.as_array(ptr, shape=(frames,)).astype(np.float32, copy=True)
 
-
 def _mix_down(channels: list[np.ndarray]) -> np.ndarray:
     usable = [ch for ch in channels if ch.size]
     if not usable:
@@ -564,7 +538,6 @@ def _mix_down(channels: list[np.ndarray]) -> np.ndarray:
         return np.ascontiguousarray(usable[0], dtype=np.float32)
     mixed = np.mean(np.stack(usable, axis=0), axis=0)
     return np.ascontiguousarray(mixed, dtype=np.float32)
-
 
 def _pcm_from_sample(sample: object) -> tuple[np.ndarray, int] | None:
     """取出单声道 float32。音频 CMSampleBuffer 的 DataBuffer 是空的，必须走 AudioBufferList。"""
@@ -575,7 +548,6 @@ def _pcm_from_sample(sample: object) -> tuple[np.ndarray, int] | None:
     if legacy is None:
         return None
     return legacy, 48000
-
 
 def _pcm_from_audio_list(sample: object) -> tuple[np.ndarray, int] | None:
     import AVFoundation as av  # type: ignore
@@ -638,7 +610,6 @@ def _pcm_from_audio_list(sample: object) -> tuple[np.ndarray, int] | None:
         return None
     return mono, rate
 
-
 def _copy_int16_channel(channel: object, frames: int) -> np.ndarray:
     frames = int(frames)
     if frames <= 0:
@@ -650,7 +621,6 @@ def _copy_int16_channel(channel: object, frames: int) -> np.ndarray:
 
     ptr = ctypes.cast(channel, ctypes.POINTER(ctypes.c_int16))
     return np.ctypeslib.as_array(ptr, shape=(frames,)).astype(np.int16, copy=True)
-
 
 def _pcm_from_block(sample: object) -> np.ndarray | None:
     import CoreMedia  # type: ignore
@@ -673,9 +643,7 @@ def _pcm_from_block(sample: object) -> np.ndarray | None:
         pcm = pcm.reshape(-1, 2).mean(axis=1)
     return np.ascontiguousarray(pcm, dtype=np.float32)
 
-
 _sink_cls: type | None = None
-
 
 def _sink_class() -> type:
     global _sink_cls
@@ -717,7 +685,6 @@ def _sink_class() -> type:
     _sink_cls = _SckSink
     return _sink_cls
 
-
 def _mic_device_score(device: object) -> int:
     name = str(getattr(device, "localizedName", lambda: "")() or "").lower()
     uid = str(getattr(device, "uniqueID", lambda: "")() or "").lower()
@@ -740,7 +707,6 @@ def _mic_device_score(device: object) -> int:
         return 50
     return 10
 
-
 def _pick_mic_device(av: object) -> object | None:
     devices: list = []
     try:
@@ -756,9 +722,7 @@ def _pick_mic_device(av: object) -> object | None:
     except Exception:
         return None
 
-
 _mic_sink_cls: type | None = None
-
 
 def _mic_sink_class() -> type:
     global _mic_sink_cls
@@ -789,21 +753,6 @@ def _mic_sink_class() -> type:
                 pcm, rate = parsed
                 if pcm.size == 0:
                     return
-                # #region agent log
-                if self._logged < 3:
-                    self._logged += 1
-                    _agent_log(
-                        "H1-H2",
-                        "capture.py:mic_sink",
-                        "mic sample",
-                        {
-                            "frames": int(pcm.size),
-                            "rate": int(rate),
-                            "peak": float(np.max(np.abs(pcm))),
-                            "runId": "post-fix",
-                        },
-                    )
-                # #endregion
                 self.push(pcm, int(rate) or 48000)
             except Exception:
                 return
@@ -812,7 +761,6 @@ def _mic_sink_class() -> type:
 
     _mic_sink_cls = _MicSink
     return _mic_sink_cls
-
 
 def _start_mic(push: PushFn) -> Callable[[], None]:
     import AVFoundation as av  # type: ignore
@@ -823,14 +771,6 @@ def _start_mic(push: PushFn) -> Callable[[], None]:
     except Exception:
         auth = -1
     live_mic = _live_permissions().get("microphone") or ""
-    # #region agent log
-    _agent_log(
-        "C-D",
-        "capture.py:_start_mic",
-        "mic auth check",
-        {"auth": auth, "live_mic": live_mic, "runId": "post-fix"},
-    )
-    # #endregion
     if auth != 3 and live_mic != "granted":
         granted = threading.Event()
         box: dict[str, bool] = {"ok": False}
@@ -850,31 +790,6 @@ def _start_mic(push: PushFn) -> Callable[[], None]:
         raise RuntimeError("找不到可用的麦克风设备")
     device_name = str(device.localizedName() or "")
     device_uid = str(device.uniqueID() or "")
-    # #region agent log
-    try:
-        all_devs = [
-            {
-                "name": str(d.localizedName() or ""),
-                "uid": str(d.uniqueID() or "")[:40],
-                "score": _mic_device_score(d),
-            }
-            for d in list(av.AVCaptureDevice.devicesWithMediaType_("soun") or [])
-        ]
-    except Exception:
-        all_devs = []
-    _agent_log(
-        "H1",
-        "capture.py:_start_mic",
-        "mic device picked",
-        {
-            "name": device_name,
-            "uid": device_uid[:48],
-            "score": _mic_device_score(device),
-            "devices": all_devs[:8],
-            "runId": "post-fix",
-        },
-    )
-    # #endregion
 
     session = av.AVCaptureSession.alloc().init()
     try:

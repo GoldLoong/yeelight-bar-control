@@ -119,6 +119,7 @@ def get_browser_status(
     require_extension: bool = True,
     match_hosts: list[str] | None = None,
     owners: list[str] | None = None,
+    title_fallback: bool = True,
 ) -> MediaStatus:
     plugin = get_browser_plugin_status()
     if plugin is not None:
@@ -141,6 +142,12 @@ def get_browser_status(
                     fullscreen=plugin.fullscreen,
                 )
             return plugin
+
+    # 更高优先级的源已经在跟时，不必为了标题再扫一遍窗口。
+    if not title_fallback:
+        return MediaStatus(
+            running=False, playing=False, provider="browser", source="none"
+        )
 
     # 无新鲜 hook / 已退出：视频页标题兜底（排除首页）
     title_hit = _bilibili_video_window_title(owners)

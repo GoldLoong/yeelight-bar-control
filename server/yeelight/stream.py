@@ -175,6 +175,7 @@ def smooth_color(
     nxt: tuple[int, int, int],
     alpha: float = 0.35,
 ) -> tuple[int, int, int]:
+    """RGB 通道线性混合（旧行为；大跨度时中间色可能发灰）。"""
     if prev is None:
         return nxt
     return (
@@ -184,11 +185,48 @@ def smooth_color(
     )
 
 
+def _lerp_hue(a: float, b: float, t: float) -> float:
+    """色相最短路径插值（0..1），避免跨红时绕远。"""
+    d = (b - a) % 1.0
+    if d > 0.5:
+        d -= 1.0
+    return (a + d * t) % 1.0
+
+
+def smooth_color_hsv(
+    prev: tuple[int, int, int] | None,
+    nxt: tuple[int, int, int],
+    alpha: float = 0.35,
+) -> tuple[int, int, int]:
+    """
+    HSV 空间平滑：色相走近路，饱和/明度线性。
+    燃彩跑马灯输出与跟色平滑共用此思路，过渡更跟「相近色」。
+    """
+    import colorsys
+
+    if prev is None:
+        return nxt
+    t = max(0.0, min(1.0, float(alpha)))
+    ph, ps, pv = colorsys.rgb_to_hsv(
+        prev[0] / 255.0, prev[1] / 255.0, prev[2] / 255.0
+    )
+    nh, ns, nv = colorsys.rgb_to_hsv(nxt[0] / 255.0, nxt[1] / 255.0, nxt[2] / 255.0)
+    h = _lerp_hue(ph, nh, t)
+    s = ps + (ns - ps) * t
+    v = pv + (nv - pv) * t
+    r, g, b = colorsys.hsv_to_rgb(h, max(0.0, min(1.0, s)), max(0.0, min(1.0, v)))
+    return (
+        int(max(0, min(255, round(r * 255)))),
+        int(max(0, min(255, round(g * 255)))),
+        int(max(0, min(255, round(b * 255)))),
+    )
+
+
 def adaptive_smooth_color(
     prev: tuple[int, int, int] | None,
     nxt: tuple[int, int, int],
 ) -> tuple[int, int, int]:
-    """更跟手：大变化几乎直出，小抖动才平滑。"""
+    """更跟手：大变化几乎直出，小抖动才平滑（HSV 近路）。"""
     if prev is None:
         return nxt
     dist = abs(prev[0] - nxt[0]) + abs(prev[1] - nxt[1]) + abs(prev[2] - nxt[2])
@@ -200,4 +238,4 @@ def adaptive_smooth_color(
         alpha = 0.5
     else:
         alpha = 0.32
-    return smooth_color(prev, nxt, alpha=alpha)
+    return smooth_color_hsv(prev, nxt, alpha=alpha)

@@ -160,6 +160,8 @@ def _copy_flat_into_source(flat: dict[str, Any]) -> dict[str, Any]:
 class SyncConfig(BaseModel):
     enabled: bool = True
     priority: list[str] = Field(default_factory=lambda: list(DEFAULT_SYNC_PRIORITY))
+    # 取色后端：auto/mss=稳定 mss；stream=SCStream；sck=旧截图 API（易漏内存，仅调试）
+    capture_backend: Literal["auto", "mss", "stream", "sck"] = "auto"
     iina: IinaSyncSettings = Field(default_factory=IinaSyncSettings)
     browser: BrowserSyncSettings = Field(default_factory=BrowserSyncSettings)
     screen: ScreenSyncSettings = Field(default_factory=ScreenSyncSettings)
@@ -261,7 +263,13 @@ class SyncConfig(BaseModel):
 
 
 class ModePreset(BaseModel):
+    """旋钮/App 四模式：主灯(CT)+氛围灯(RGB/灯效)，对齐 YLTD003 / lamp15 官方语义。"""
+
     name: str
+    # 一句话说明（卡片副标题 / 模式详情）
+    summary: str = ""
+    # 用途标签：work / game / cinema / relax
+    intent: Literal["work", "game", "cinema", "relax"] = "work"
     main_on: bool = True
     bg_on: bool = True
     bright: int = 50
@@ -276,64 +284,267 @@ class ModePreset(BaseModel):
     bg_direction: Literal["lr", "rl", "in", "out"] = "out"
 
 
+# 出厂默认版本；升版时把「仍等于旧出厂值」的模式自动换成新默认，用户改过的保留
+MODES_REV = 3
+
+# 彩虹流光色序（官方燃彩/流光常见 8 色）
+_FLOW_RAINBOW = [
+    "#FF003C",
+    "#FF7A00",
+    "#FFD400",
+    "#3DFF6E",
+    "#00E5FF",
+    "#2F6BFF",
+    "#8B3DFF",
+    "#FF2BD6",
+]
+
+
 def default_modes() -> dict[str, ModePreset]:
+    """复刻米家插件 / 旋钮四模式（YLTD003 / lamp15）。
+
+    依据：
+    - 说明书：出厂四种模式，旋钮双击切换；电影模式关屏幕灯只留氛围灯
+    - 米家插件：Office / Gaming / Movie / Entertainment，可改名与主/氛围参数
+    - 协议：主灯仅 CT（set_scene ct）；氛围灯 RGB / bg_set_scene / cf 流光
+    具体数值未公开 JSON，按官方语义 + 米家常见出厂观感标定（rev3）。
+    """
     return {
         "office": ModePreset(
             name="办公模式",
+            summary="主灯全亮护眼 · 青柠静态氛围",
+            intent="work",
             main_on=True,
             bg_on=True,
             bright=100,
             ct=4000,
-            bg_bright=55,
+            bg_bright=50,
             bg_hex="#C0FF73",
             bg_fx="static",
         ),
         "game": ModePreset(
             name="竞技模式",
+            summary="主灯略冷提神 · 幻彩流光",
+            intent="game",
             main_on=True,
             bg_on=True,
-            bright=100,
-            ct=4000,
-            bg_bright=80,
-            bg_hex="#34C759",
+            bright=90,
+            ct=5000,
+            bg_bright=85,
+            bg_hex="#3DFF6E",
             bg_fx="flow",
-            bg_speed_ms=2800,
+            bg_speed_ms=1800,
             bg_direction="lr",
-            bg_colors=[
-                "#FF0000",
-                "#FF7F00",
-                "#FFFF00",
-                "#00FF00",
-                "#00FFFF",
-                "#007FFF",
-                "#7F00FF",
-                "#FF007F",
-            ],
+            bg_colors=list(_FLOW_RAINBOW),
         ),
         "movie": ModePreset(
             name="电影模式",
+            summary="关掉屏幕灯 · 低干扰偏置光",
+            intent="cinema",
             main_on=False,
             bg_on=True,
-            bright=100,
-            ct=4000,
-            bg_bright=55,
-            bg_hex="#FF2D95",
-            bg_fx="breath",
-            bg_speed_ms=3800,
-            bg_colors=["#FF2D95", "#2A5BFF", "#AF52DE", "#34C759"],
+            bright=35,
+            ct=3000,
+            bg_bright=28,
+            bg_hex="#3D2A66",
+            bg_fx="static",
+            bg_speed_ms=4200,
         ),
         "chill": ModePreset(
             name="休闲模式",
-            main_on=False,
+            summary="暖光低亮 · 安静奶油氛围",
+            intent="relax",
+            main_on=True,
             bg_on=True,
-            bright=100,
-            ct=4000,
-            bg_bright=35,
-            bg_hex="#E8D5B5",
+            bright=45,
+            ct=3000,
+            bg_bright=40,
+            bg_hex="#E8C9A0",
             bg_fx="static",
-            bg_speed_ms=3800,
+            bg_speed_ms=4000,
         ),
     }
+
+
+def _mode_core(m: dict[str, Any]) -> dict[str, Any]:
+    """比较出厂指纹时忽略文案类字段。"""
+    keys = (
+        "main_on",
+        "bg_on",
+        "bright",
+        "ct",
+        "bg_bright",
+        "bg_hex",
+        "bg_fx",
+        "bg_speed_ms",
+        "bg_direction",
+    )
+    out = {k: m.get(k) for k in keys}
+    if "bg_hex" in out and isinstance(out["bg_hex"], str):
+        out["bg_hex"] = out["bg_hex"].upper()
+    return out
+
+
+def _legacy_factory_modes_v1() -> dict[str, dict[str, Any]]:
+    """rev=1 出厂值，用于判断用户是否改过。"""
+    return {
+        "office": {
+            "main_on": True,
+            "bg_on": True,
+            "bright": 100,
+            "ct": 4000,
+            "bg_bright": 55,
+            "bg_hex": "#C0FF73",
+            "bg_fx": "static",
+            "bg_speed_ms": 3800,
+            "bg_direction": "out",
+        },
+        "game": {
+            "main_on": True,
+            "bg_on": True,
+            "bright": 100,
+            "ct": 4000,
+            "bg_bright": 80,
+            "bg_hex": "#34C759",
+            "bg_fx": "flow",
+            "bg_speed_ms": 2800,
+            "bg_direction": "lr",
+        },
+        "movie": {
+            "main_on": False,
+            "bg_on": True,
+            "bright": 100,
+            "ct": 4000,
+            "bg_bright": 55,
+            "bg_hex": "#FF2D95",
+            "bg_fx": "breath",
+            "bg_speed_ms": 3800,
+            "bg_direction": "out",
+        },
+        "chill": {
+            "main_on": False,
+            "bg_on": True,
+            "bright": 100,
+            "ct": 4000,
+            "bg_bright": 35,
+            "bg_hex": "#E8D5B5",
+            "bg_fx": "static",
+            "bg_speed_ms": 3800,
+            "bg_direction": "out",
+        },
+    }
+
+
+def _legacy_factory_modes_v2() -> dict[str, dict[str, Any]]:
+    """rev=2 出厂值。"""
+    return {
+        "office": {
+            "main_on": True,
+            "bg_on": True,
+            "bright": 100,
+            "ct": 4000,
+            "bg_bright": 50,
+            "bg_hex": "#C0FF73",
+            "bg_fx": "static",
+            "bg_speed_ms": 3800,
+            "bg_direction": "out",
+        },
+        "game": {
+            "main_on": True,
+            "bg_on": True,
+            "bright": 90,
+            "ct": 4500,
+            "bg_bright": 85,
+            "bg_hex": "#3DFF6E",
+            "bg_fx": "flow",
+            "bg_speed_ms": 1800,
+            "bg_direction": "lr",
+        },
+        "movie": {
+            "main_on": False,
+            "bg_on": True,
+            "bright": 35,
+            "ct": 3000,
+            "bg_bright": 32,
+            "bg_hex": "#4B3B78",
+            "bg_fx": "static",
+            "bg_speed_ms": 4200,
+            "bg_direction": "out",
+        },
+        "chill": {
+            "main_on": True,
+            "bg_on": True,
+            "bright": 42,
+            "ct": 3200,
+            "bg_bright": 38,
+            "bg_hex": "#E8C9A0",
+            "bg_fx": "static",
+            "bg_speed_ms": 4000,
+            "bg_direction": "out",
+        },
+    }
+
+
+def _legacy_fingerprint(rev: int) -> dict[str, dict[str, Any]]:
+    if rev <= 1:
+        return _legacy_factory_modes_v1()
+    if rev == 2:
+        return _legacy_factory_modes_v2()
+    return {}
+
+
+def migrate_modes_data(data: dict[str, Any]) -> bool:
+    """若需要，把未改动的旧出厂模式升到 MODES_REV。返回是否改写了 data。"""
+    rev = int(data.get("modes_rev") or 1)
+    if rev >= MODES_REV:
+        # 补全缺字段（summary/intent）但不覆盖用户数值
+        modes = data.get("modes")
+        if not isinstance(modes, dict):
+            return False
+        changed = False
+        defaults = {k: v.model_dump() for k, v in default_modes().items()}
+        for mid, preset in defaults.items():
+            cur = modes.get(mid)
+            if not isinstance(cur, dict):
+                modes[mid] = preset
+                changed = True
+                continue
+            for meta_key in ("summary", "intent", "name"):
+                if not cur.get(meta_key) and preset.get(meta_key):
+                    cur[meta_key] = preset[meta_key]
+                    changed = True
+        if changed:
+            data["modes"] = modes
+        return changed
+
+    modes = data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    # 与「当前配置所在 rev 的出厂指纹」比较；也兼容仍停在更早出厂值的情况
+    fingerprints = [_legacy_fingerprint(rev)]
+    if rev > 1:
+        fingerprints.append(_legacy_factory_modes_v1())
+    if rev > 2:
+        fingerprints.append(_legacy_factory_modes_v2())
+    defaults = {k: v.model_dump() for k, v in default_modes().items()}
+    for mid, preset in defaults.items():
+        cur = modes.get(mid)
+        is_factory = not isinstance(cur, dict) or any(
+            _mode_core(cur) == _mode_core(fp.get(mid, {})) for fp in fingerprints if fp
+        )
+        if is_factory:
+            modes[mid] = preset
+        else:
+            # 用户改过：只补文案
+            for meta_key in ("summary", "intent"):
+                if not cur.get(meta_key):
+                    cur[meta_key] = preset.get(meta_key)
+            if not cur.get("name"):
+                cur["name"] = preset["name"]
+            modes[mid] = cur
+    data["modes"] = modes
+    data["modes_rev"] = MODES_REV
+    return True
 
 
 class AmbientState(BaseModel):
@@ -355,20 +566,27 @@ class MusicSettings(BaseModel):
     """音乐跃动。亮度和追色用的氛围灯亮度分开记。"""
 
     input: Literal["system", "mic"] = "system"
-    styles: list[Literal["beat", "loudness", "spectrum"]] = Field(
+    styles: list[Literal["beat", "loudness", "spectrum", "beat_swap", "night"]] = Field(
         default_factory=lambda: ["beat"]
     )
     palette: Literal["builtin", "ambient"] = "builtin"
     bright: int = 40
+    # 彩蛋「夜色模式」：三击小点后常显入口；toast 是否已提示过
+    night_mode_entry_visible: bool = False
+    night_mode_toast_seen: bool = False
 
     @model_validator(mode="after")
     def _normalize_styles(self) -> MusicSettings:
-        allowed = ("beat", "loudness", "spectrum")
+        allowed = ("beat", "loudness", "spectrum", "beat_swap", "night")
         seen: list[str] = []
         for item in self.styles or []:
             if item in allowed and item not in seen:
                 seen.append(item)
-        self.styles = seen or ["beat"]  # type: ignore[assignment]
+        # 夜色独占：勾选后只保留 night，避免和普通效果混跑
+        if "night" in seen:
+            self.styles = ["night"]  # type: ignore[assignment]
+        else:
+            self.styles = seen or ["beat"]  # type: ignore[assignment]
         self.bright = max(1, min(100, int(self.bright)))
         return self
 
@@ -383,6 +601,7 @@ class AppConfig(BaseModel):
     onboarding: OnboardingState = Field(default_factory=OnboardingState)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     modes: dict[str, ModePreset] = Field(default_factory=default_modes)
+    modes_rev: int = MODES_REV
     ambient: AmbientState = Field(default_factory=AmbientState)
     drive_mode: Literal["picture", "music"] = "picture"
     music: MusicSettings = Field(default_factory=MusicSettings)
@@ -395,7 +614,13 @@ def ensure_config() -> AppConfig:
 
 def load_config() -> AppConfig:
     ensure_config_file()
-    data = json.loads(config_path().read_text(encoding="utf-8"))
+    path = config_path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if migrate_modes_data(data):
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return AppConfig.model_validate(data)
 
 
